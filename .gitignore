@@ -27,9 +27,17 @@ wheels/
 .installed.cfg
 *.egg
 
+# Python tool caches
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+.tox/
+
 # Testing
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
 # IDEs
@@ -39,9 +47,22 @@ htmlcov/
 *.swo
 *~
 .DS_Store
+Thumbs.db
+
+# Jupyter/IPython
+.ipynb_checkpoints/
 
 # UV
 uv.lock
 
 # Logs
 *.log
+
+# Temporary files
+*.bak
+*.tmp
+*.orig
+
+# Project-specific
+documents/
+examples/docling_basics/output/

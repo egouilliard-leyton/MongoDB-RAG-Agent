@@ -1,7 +1,7 @@
 """Settings configuration for MongoDB RAG Agent."""
 
 from pydantic_settings import BaseSettings
-from pydantic import Field, ConfigDict
+from pydantic import Field, ConfigDict, field_validator
 from dotenv import load_dotenv
 from typing import Optional
 
@@ -87,6 +87,25 @@ class Settings(BaseSettings):
     default_text_weight: float = Field(
         default=0.3, description="Default text weight for hybrid search (0-1)"
     )
+
+    # Citation Configuration
+    show_full_citations: bool = Field(
+        default=False, description="Show full citations with source and path (True) or just title with link (False)"
+    )
+    
+    @field_validator('show_full_citations', mode='before')
+    @classmethod
+    def parse_show_full_citations(cls, v):
+        """Parse show_full_citations from various string formats."""
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            v_lower = v.lower().strip()
+            if v_lower in ('true', '1', 'yes', 'on'):
+                return True
+            if v_lower in ('false', '0', 'no', 'off', ''):
+                return False
+        return bool(v) if v is not None else False
 
 
 def load_settings() -> Settings:
