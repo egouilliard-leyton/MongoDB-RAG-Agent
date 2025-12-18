@@ -29,6 +29,26 @@ class Settings(BaseSettings):
         default="chunks", description="Collection for document chunks with embeddings"
     )
 
+    mongodb_collection_qa_sessions: str = Field(
+        default="qa_sessions", description="Collection for Q&A sessions"
+    )
+
+    mongodb_collection_qa_pairs: str = Field(
+        default="qa_pairs", description="Collection for Q&A pairs"
+    )
+
+    qa_auto_success_days: int = Field(
+        default=30, description="Days after export to auto-mark session as successful"
+    )
+
+    qa_background_check_enabled: bool = Field(
+        default=True, description="Enable background task scheduler for auto-success detection"
+    )
+
+    qa_background_check_interval_hours: int = Field(
+        default=24, description="Interval in hours between background checks (default: 24 hours)"
+    )
+
     mongodb_vector_index: str = Field(
         default="vector_index",
         description="Vector search index name (must be created in Atlas UI)",

@@ -2,12 +2,14 @@
 
 import asyncio
 import logging
+import time
 from typing import Optional, List, Dict, Any
 from pydantic_ai import RunContext
 from pydantic import BaseModel, Field
 from pymongo.errors import OperationFailure
 
 from src.dependencies import AgentDependencies
+from src.settings import load_settings
 
 logger = logging.getLogger(__name__)
 
@@ -469,10 +471,28 @@ async def hybrid_search(
 
         # Over-fetch for better RRF results (2x requested count)
         fetch_count = match_count * 2
+        search_start_time = time.time()
 
-        logger.info(f"hybrid_search starting: query='{query}', match_count={match_count}")
+        logger.info(
+            f"hybrid_search starting: query='{query[:100]}', match_count={match_count}, fetch_count={fetch_count}",
+            extra={
+                'query': query[:200],
+                'match_count': match_count,
+                'fetch_count': fetch_count,
+                'filters': {
+                    'document_type': document_type,
+                    'author': author,
+                    'date_from': date_from,
+                    'date_to': date_to,
+                    'keywords': keywords,
+                    'section_type': section_type
+                }
+            }
+        )
 
         # Run both searches concurrently for performance with metadata filters
+        semantic_start = time.time()
+        text_start = time.time()
         semantic_results, text_results = await asyncio.gather(
             semantic_search(
                 ctx, query, fetch_count,
@@ -496,40 +516,429 @@ async def hybrid_search(
         )
 
         # Handle errors gracefully
+        semantic_time = time.time() - semantic_start
+        text_time = time.time() - text_start
+        
         if isinstance(semantic_results, Exception):
-            logger.warning(f"Semantic search failed: {semantic_results}, using text results only")
+            logger.warning(
+                f"Semantic search failed: {semantic_results}, using text results only",
+                extra={
+                    'query': query[:200],
+                    'semantic_time_ms': round(semantic_time * 1000, 2),
+                    'error': str(semantic_results),
+                    'error_type': type(semantic_results).__name__
+                },
+                exc_info=True
+            )
             semantic_results = []
+        else:
+            logger.debug(
+                f"Semantic search completed: {len(semantic_results)} results in {semantic_time:.2f}s",
+                extra={
+                    'query': query[:200],
+                    'result_count': len(semantic_results),
+                    'semantic_time_ms': round(semantic_time * 1000, 2)
+                }
+            )
+            
         if isinstance(text_results, Exception):
-            logger.warning(f"Text search failed: {text_results}, using semantic results only")
+            logger.warning(
+                f"Text search failed: {text_results}, using semantic results only",
+                extra={
+                    'query': query[:200],
+                    'text_time_ms': round(text_time * 1000, 2),
+                    'error': str(text_results),
+                    'error_type': type(text_results).__name__
+                },
+                exc_info=True
+            )
             text_results = []
+        else:
+            logger.debug(
+                f"Text search completed: {len(text_results)} results in {text_time:.2f}s",
+                extra={
+                    'query': query[:200],
+                    'result_count': len(text_results),
+                    'text_time_ms': round(text_time * 1000, 2)
+                }
+            )
 
         # If both failed, return empty
         if not semantic_results and not text_results:
-            logger.error("Both semantic and text search failed")
+            total_time = time.time() - search_start_time
+            logger.error(
+                "Both semantic and text search failed",
+                extra={
+                    'query': query[:200],
+                    'total_time_ms': round(total_time * 1000, 2),
+                    'semantic_time_ms': round(semantic_time * 1000, 2),
+                    'text_time_ms': round(text_time * 1000, 2)
+                }
+            )
             return []
 
         # Merge results using Reciprocal Rank Fusion
+        rrf_start = time.time()
         merged_results = reciprocal_rank_fusion(
             [semantic_results, text_results],
             k=60  # Standard RRF constant
         )
+        rrf_time = time.time() - rrf_start
 
         # Return top N results
         final_results = merged_results[:match_count]
+        total_time = time.time() - search_start_time
 
         logger.info(
-            f"hybrid_search_completed: query='{query}', "
+            f"hybrid_search_completed: query='{query[:100]}', "
             f"semantic={len(semantic_results)}, text={len(text_results)}, "
-            f"merged={len(merged_results)}, returned={len(final_results)}"
+            f"merged={len(merged_results)}, returned={len(final_results)} in {total_time:.2f}s",
+            extra={
+                'query': query[:200],
+                'semantic_count': len(semantic_results),
+                'text_count': len(text_results),
+                'merged_count': len(merged_results),
+                'returned_count': len(final_results),
+                'total_time_ms': round(total_time * 1000, 2),
+                'rrf_time_ms': round(rrf_time * 1000, 2),
+                'top_similarities': [r.similarity for r in final_results[:3]] if final_results else []
+            }
         )
 
         return final_results
 
     except Exception as e:
-        logger.exception(f"hybrid_search_error: query={query}, error={str(e)}")
+        total_time = time.time() - search_start_time if 'search_start_time' in locals() else 0
+        logger.exception(
+            f"hybrid_search_error: query={query[:100]}, error={str(e)}",
+            extra={
+                'query': query[:200],
+                'total_time_ms': round(total_time * 1000, 2),
+                'error': str(e),
+                'error_type': type(e).__name__
+            }
+        )
         # Graceful degradation: try semantic-only as last resort
         try:
-            logger.info("Falling back to semantic search only")
+            logger.info(f"Falling back to semantic search only for query: {query[:100]}")
             return await semantic_search(ctx, query, match_count)
-        except:
+        except Exception as fallback_error:
+            logger.error(
+                f"Fallback semantic search also failed: {fallback_error}",
+                extra={'query': query[:200], 'error': str(fallback_error)},
+                exc_info=True
+            )
             return []
+
+
+async def extract_questions(user_input: str) -> List[str]:
+    """
+    Extract individual questions from user input using LLM.
+
+    Handles:
+    - Numbered lists (1. Question 1, 2. Question 2)
+    - Bullet points (- Question, • Question)
+    - Multiple sentences ending with ?
+    - Single question
+
+    Args:
+        user_input: User input text that may contain multiple questions
+
+    Returns:
+        List of question strings
+    """
+    from src.providers import get_llm_model
+    from pydantic_ai import Agent
+    from pydantic import BaseModel
+    from typing import List as TypingList
+
+    try:
+        # Create a simple agent for question extraction
+        class QuestionList(BaseModel):
+            questions: TypingList[str]
+
+        extraction_prompt = f"""Extract all individual questions from the following user input.
+The input may contain:
+- Numbered lists (1. Question, 2. Question)
+- Bullet points (- Question, • Question)
+- Multiple sentences ending with ?
+- A single question
+
+Return ONLY a JSON array of question strings, one per question.
+Clean each question (remove numbering, bullets, extra whitespace).
+
+Input:
+{user_input}
+
+Return a JSON object with a "questions" array field containing all extracted questions."""
+
+        llm = get_llm_model()
+        agent = Agent(llm, system_prompt="You are a question extraction assistant. Extract questions and return them as a JSON array.")
+        
+        result = await agent.run(extraction_prompt, response_type=QuestionList)
+        
+        questions = result.data.questions if result.data else []
+        
+        # Clean questions
+        cleaned_questions = []
+        for q in questions:
+            # Remove numbering patterns (1., 2., etc.)
+            import re
+            q = re.sub(r'^\d+[\.\)]\s*', '', q.strip())
+            # Remove bullet points
+            q = re.sub(r'^[-•*]\s*', '', q.strip())
+            # Remove extra whitespace
+            q = ' '.join(q.split())
+            if q and q.endswith('?'):
+                cleaned_questions.append(q)
+            elif q:
+                # Add ? if missing
+                cleaned_questions.append(q + '?')
+        
+        logger.info(f"Extracted {len(cleaned_questions)} questions from input")
+        return cleaned_questions if cleaned_questions else [user_input]
+
+    except Exception as e:
+        logger.exception(f"Error extracting questions: {e}")
+        # Fallback: return input as single question
+        return [user_input]
+
+
+def build_qa_history_filter(
+    outcome_status: Optional[str] = None,
+    user_role: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Build MongoDB filter query for Q&A history search.
+
+    Args:
+        outcome_status: Filter by outcome ("successful", "unsuccessful", None for all)
+        user_role: Filter by user role ("junior", "senior", None for all)
+
+    Returns:
+        Dictionary with filter conditions
+
+    Raises:
+        ValueError: If invalid parameters provided
+    """
+    filter_query = {}
+    
+    # Validate outcome_status
+    if outcome_status is not None:
+        outcome_status_lower = outcome_status.lower().strip()
+        if outcome_status_lower not in ("successful", "unsuccessful"):
+            raise ValueError(
+                f"Invalid outcome_status: {outcome_status}. "
+                f"Must be 'successful', 'unsuccessful', or None"
+            )
+        filter_query["outcome_status"] = outcome_status_lower
+    
+    # Validate user_role
+    if user_role is not None:
+        user_role_lower = user_role.lower().strip()
+        if user_role_lower not in ("junior", "senior"):
+            raise ValueError(
+                f"Invalid user_role: {user_role}. "
+                f"Must be 'junior', 'senior', or None"
+            )
+        filter_query["user_role"] = user_role_lower
+    
+    return filter_query
+
+
+async def search_qa_history(
+    ctx: RunContext[AgentDependencies],
+    query: str,
+    match_count: Optional[int] = 5,
+    outcome_status: Optional[str] = "successful",
+    user_role: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    """
+    Search historical Q&A pairs using vector similarity.
+
+    Args:
+        ctx: Agent runtime context with dependencies
+        query: Search query
+        match_count: Number of results to return
+        outcome_status: Filter by outcome ("successful", "unsuccessful", None for all)
+        user_role: Filter by user role ("junior", "senior", None for all)
+
+    Returns:
+        List of Q&A pairs with similarity scores and session context
+    """
+    search_start_time = time.time()
+    try:
+        deps = ctx.deps
+
+        logger.info(
+            f"search_qa_history starting: query='{query[:100]}', match_count={match_count}, "
+            f"outcome_status={outcome_status}, user_role={user_role}",
+            extra={
+                'query': query[:200],
+                'match_count': match_count,
+                'outcome_status': outcome_status,
+                'user_role': user_role
+            }
+        )
+
+        # Use default if not specified
+        if match_count is None:
+            match_count = deps.settings.default_match_count
+
+        # Validate match count
+        match_count = min(match_count, deps.settings.max_match_count)
+
+        # Validate and build filter query
+        try:
+            filter_query = build_qa_history_filter(
+                outcome_status=outcome_status,
+                user_role=user_role
+            )
+            logger.debug(
+                f"Q&A history filter built: {filter_query}",
+                extra={'filter_query': filter_query}
+            )
+        except ValueError as e:
+            logger.warning(
+                f"Invalid Q&A history filter parameters: {e}",
+                extra={
+                    'query': query[:200],
+                    'outcome_status': outcome_status,
+                    'user_role': user_role,
+                    'error': str(e)
+                }
+            )
+            return []
+
+        # Generate embedding for query
+        query_embedding = await deps.get_embedding(query)
+        embedding_time = time.time() - embedding_start
+        logger.debug(
+            f"Query embedding generated in {embedding_time:.2f}s",
+            extra={'embedding_time_ms': round(embedding_time * 1000, 2)}
+        )
+
+        # Build MongoDB aggregation pipeline
+        pipeline = []
+
+        # Vector search stage
+        pipeline.append({
+            "$vectorSearch": {
+                "index": deps.settings.mongodb_vector_index,
+                "queryVector": query_embedding,
+                "path": "question_embedding",
+                "numCandidates": 100,
+                "limit": match_count * 2 if filter_query else match_count
+            }
+        })
+
+        # Add $match stage after vector search to apply filters
+        # Note: outcome_status filter applies to qa_pairs collection
+        qa_pair_filter = {}
+        if "outcome_status" in filter_query:
+            qa_pair_filter["outcome_status"] = filter_query["outcome_status"]
+        
+        if qa_pair_filter:
+            pipeline.append({"$match": qa_pair_filter})
+
+        # Lookup session information
+        pipeline.append({
+            "$lookup": {
+                "from": deps.settings.mongodb_collection_qa_sessions,
+                "localField": "session_id",
+                "foreignField": "_id",
+                "as": "session_info"
+            }
+        })
+        pipeline.append({
+            "$unwind": "$session_info"
+        })
+
+        # Filter by user_role if provided (applies to session)
+        if "user_role" in filter_query:
+            pipeline.append({
+                "$match": {"session_info.user_role": filter_query["user_role"]}
+            })
+
+        # Project fields
+        pipeline.append({
+            "$project": {
+                "_id": 1,
+                "session_id": 1,
+                "question": 1,
+                "original_answer": 1,
+                "edited_answer": 1,
+                "final_answer": 1,
+                "citations": 1,
+                "question_index": 1,
+                "outcome_status": 1,
+                "similarity": {"$meta": "vectorSearchScore"},
+                "session_name": "$session_info.session_name",
+                "session_user_role": "$session_info.user_role",
+                "session_company_info": "$session_info.metadata.company_info",
+                "created_at": 1
+            }
+        })
+
+        # Execute aggregation
+        db_start = time.time()
+        collection = deps.db[deps.settings.mongodb_collection_qa_pairs]
+        cursor = await collection.aggregate(pipeline)
+        results = [doc async for doc in cursor][:match_count]
+        db_time = time.time() - db_start
+
+        # Convert ObjectIds to strings
+        for result in results:
+            result["_id"] = str(result["_id"])
+            result["session_id"] = str(result["session_id"])
+
+        total_time = time.time() - search_start_time
+        top_similarities = [r.get('similarity', 0.0) for r in results[:3]] if results else []
+        
+        logger.info(
+            f"search_qa_history completed: query='{query[:100]}', "
+            f"results={len(results)}, match_count={match_count}, "
+            f"outcome_status={outcome_status}, user_role={user_role} in {total_time:.2f}s",
+            extra={
+                'query': query[:200],
+                'result_count': len(results),
+                'match_count': match_count,
+                'outcome_status': outcome_status,
+                'user_role': user_role,
+                'total_time_ms': round(total_time * 1000, 2),
+                'embedding_time_ms': round(embedding_time * 1000, 2),
+                'db_time_ms': round(db_time * 1000, 2),
+                'top_similarities': top_similarities
+            }
+        )
+
+        return results
+
+    except OperationFailure as e:
+        total_time = time.time() - search_start_time if 'search_start_time' in locals() else 0
+        error_code = e.code if hasattr(e, 'code') else None
+        logger.error(
+            f"search_qa_history failed (OperationFailure): query='{query[:100]}', "
+            f"error={str(e)}, code={error_code}",
+            extra={
+                'query': query[:200],
+                'error': str(e),
+                'error_code': error_code,
+                'error_type': 'OperationFailure',
+                'total_time_ms': round(total_time * 1000, 2)
+            },
+            exc_info=True
+        )
+        return []
+    except Exception as e:
+        total_time = time.time() - search_start_time if 'search_start_time' in locals() else 0
+        logger.exception(
+            f"search_qa_history error: query='{query[:100]}', error={str(e)}",
+            extra={
+                'query': query[:200],
+                'error': str(e),
+                'error_type': type(e).__name__,
+                'total_time_ms': round(total_time * 1000, 2)
+            }
+        )
+        return []

@@ -134,3 +134,51 @@ User: "What regulations are referenced in KDIP2 documents?"
 2. Focus on regulation references from Przepis sections
 
 Remember: Not every interaction requires a search. Use your judgment about when to search the knowledge base. For simple questions, use direct search. For complex questions, decompose first. When users ask about specific document types, dates, authors, or sections, use metadata filtering to provide more precise results."""
+
+
+QA_HISTORY_PROMPT = """
+## Similar Successful Q&A from History
+
+The following questions and answers from previous successful sessions are similar to the current question:
+
+{qa_history}
+
+**Instructions:**
+- Use these successful answers as reference, but adapt them for the current question
+- Do NOT copy verbatim - adapt the information to match the current question's specific context
+- If the historical answer is highly relevant (similarity > 0.8), you can reference similar approaches but ensure your answer addresses the current question's nuances
+- Consider the similarity scores to gauge how relevant each historical answer is
+- Combine insights from historical answers with new document search results when appropriate
+- Cite historical Q&A when you're building upon or referencing previous successful approaches
+"""
+
+
+MULTI_QUESTION_PROMPT = """
+You are processing multiple questions. Answer each question independently
+with citations. Format responses clearly for each question.
+"""
+
+
+FOLLOW_UP_CONTEXT_PROMPT = """
+## IMPORTANT: Follow-up Session Context (Round {round_number})
+
+This is a follow-up session building upon a previous round that did not fully address the user's needs.
+
+### Previous Round Q&A Pairs
+
+The following questions and answers from the previous round need improvement:
+
+{previous_qa_pairs}
+
+### Instructions for Answer Generation
+
+- **Review the previous answers** and identify what was missing, incorrect, or insufficient
+- **Do NOT repeat the same approach** if it didn't work in the previous round
+- **Provide more comprehensive, accurate, or detailed answers** than before
+- **Consider different angles** or additional information sources that weren't explored previously
+- **If previous answers were partially correct**, build upon them rather than starting over completely
+- **Address any gaps** that made the previous round unsuccessful
+- **Ensure your answer fully addresses** the user's question this time
+
+Use this context to inform your answer generation, but still search the knowledge base for current, accurate information.
+"""

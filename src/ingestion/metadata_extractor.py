@@ -269,3 +269,116 @@ def extract_title_enhanced(
     logger.debug(f"Title fallback to filename: {filename_title}")
     return filename_title
 
+
+def extract_outcome_status(content: str) -> Dict[str, Any]:
+    """
+    Extract success/unsuccess status from document paragraphs.
+    
+    Scans for patterns like:
+    - "interpretacja jest korzystna" / "interpretacja jest niekorzystna"
+    - "stanowisko jest pozytywne" / "stanowisko jest negatywne"
+    - "interpretacja zakończona sukcesem" / "interpretacja zakończona niepowodzeniem"
+    - "interpretacja korzystna" / "interpretacja niekorzystna"
+    - "pozytywna interpretacja" / "negatywna interpretacja"
+    
+    Args:
+        content: Document content (markdown format)
+        
+    Returns:
+        {
+            "outcome_status": Optional[str] ("successful" | "unsuccessful"),
+            "outcome_paragraphs": List[str] (relevant paragraph texts)
+        }
+    """
+    import re
+    
+    outcome_status = None
+    outcome_paragraphs = []
+    
+    # Patterns indicating successful outcome
+    successful_patterns = [
+        r'interpretacja\s+(jest\s+)?korzystna',
+        r'stanowisko\s+(jest\s+)?pozytywne',
+        r'interpretacja\s+zakończona\s+sukcesem',
+        r'pozytywna\s+interpretacja',
+        r'interpretacja\s+pozytywna',
+        r'korzystna\s+interpretacja',
+        r'interpretacja\s+(jest\s+)?pozytywna',
+    ]
+    
+    # Patterns indicating unsuccessful outcome
+    unsuccessful_patterns = [
+        r'interpretacja\s+(jest\s+)?niekorzystna',
+        r'stanowisko\s+(jest\s+)?negatywne',
+        r'interpretacja\s+zakończona\s+niepowodzeniem',
+        r'negatywna\s+interpretacja',
+        r'interpretacja\s+negatywna',
+        r'niekorzystna\s+interpretacja',
+        r'interpretacja\s+(jest\s+)?negatywna',
+    ]
+    
+    # Split content into paragraphs (lines separated by double newlines or single newline after heading)
+    paragraphs = re.split(r'\n\n+', content)
+    
+    # Also check individual lines for patterns
+    lines = content.split('\n')
+    
+    # Check paragraphs
+    for para in paragraphs:
+        para_lower = para.lower()
+        
+        # Check for successful patterns
+        for pattern in successful_patterns:
+            if re.search(pattern, para_lower, re.IGNORECASE):
+                if outcome_status != "unsuccessful":  # Don't override if already marked unsuccessful
+                    outcome_status = "successful"
+                    if para.strip() and para.strip() not in outcome_paragraphs:
+                        outcome_paragraphs.append(para.strip())
+                break
+        
+        # Check for unsuccessful patterns
+        for pattern in unsuccessful_patterns:
+            if re.search(pattern, para_lower, re.IGNORECASE):
+                outcome_status = "unsuccessful"
+                if para.strip() and para.strip() not in outcome_paragraphs:
+                    outcome_paragraphs.append(para.strip())
+                break
+    
+    # Also check lines for quick matches
+    if not outcome_status:
+        for line in lines:
+            line_lower = line.lower()
+            
+            for pattern in successful_patterns:
+                if re.search(pattern, line_lower, re.IGNORECASE):
+                    outcome_status = "successful"
+                    if line.strip() and line.strip() not in outcome_paragraphs:
+                        outcome_paragraphs.append(line.strip())
+                    break
+            
+            if outcome_status:
+                break
+            
+            for pattern in unsuccessful_patterns:
+                if re.search(pattern, line_lower, re.IGNORECASE):
+                    outcome_status = "unsuccessful"
+                    if line.strip() and line.strip() not in outcome_paragraphs:
+                        outcome_paragraphs.append(line.strip())
+                    break
+            
+            if outcome_status:
+                break
+    
+    # Limit outcome paragraphs to avoid storing too much
+    outcome_paragraphs = outcome_paragraphs[:5]
+    
+    logger.debug(
+        f"Extracted outcome status: {outcome_status}, "
+        f"found {len(outcome_paragraphs)} relevant paragraphs"
+    )
+    
+    return {
+        "outcome_status": outcome_status,
+        "outcome_paragraphs": outcome_paragraphs
+    }
+

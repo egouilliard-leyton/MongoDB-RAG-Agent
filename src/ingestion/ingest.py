@@ -25,7 +25,8 @@ from src.ingestion.embedder import create_embedder
 from src.ingestion.metadata_extractor import (
     extract_tax_interpretation_metadata,
     extract_structured_metadata,
-    extract_title_enhanced
+    extract_title_enhanced,
+    extract_outcome_status
 )
 from src.ingestion.section_identifier import get_section_count
 from src.settings import load_settings
@@ -408,6 +409,17 @@ class DocumentIngestionPipeline:
             metadata['section_count'] = section_count
         except Exception as e:
             logger.warning(f"Failed to count sections: {e}")
+
+        # Extract outcome status (successful/unsuccessful)
+        try:
+            outcome_data = extract_outcome_status(content)
+            if outcome_data.get("outcome_status"):
+                metadata['outcome_status'] = outcome_data['outcome_status']
+            if outcome_data.get("outcome_paragraphs"):
+                metadata['outcome_paragraphs'] = outcome_data['outcome_paragraphs']
+            logger.debug(f"Extracted outcome status: {outcome_data.get('outcome_status')}")
+        except Exception as e:
+            logger.warning(f"Failed to extract outcome status: {e}")
 
         return metadata
 
