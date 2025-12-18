@@ -12,6 +12,54 @@ from src.dependencies import AgentDependencies
 logger = logging.getLogger(__name__)
 
 
+def build_metadata_filter(
+    document_type: Optional[str] = None,
+    author: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    keywords: Optional[List[str]] = None,
+    section_type: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Build MongoDB filter query from metadata parameters.
+
+    Args:
+        document_type: Filter by document type (e.g., "KDIP2", "KDIB1-3")
+        author: Filter by author
+        date_from: Filter by document date (from, inclusive)
+        date_to: Filter by document date (to, inclusive)
+        keywords: Filter by keywords (any match)
+        section_type: Filter by section type (e.g., "przepis", "zagadnienie")
+
+    Returns:
+        MongoDB filter dictionary
+    """
+    filter_query = {}
+
+    if document_type:
+        filter_query["metadata.document_type"] = document_type
+
+    if author:
+        filter_query["metadata.author"] = author
+
+    if date_from or date_to:
+        date_filter = {}
+        if date_from:
+            date_filter["$gte"] = date_from
+        if date_to:
+            date_filter["$lte"] = date_to
+        filter_query["metadata.document_date"] = date_filter
+
+    if keywords:
+        # Match any keyword in the array
+        filter_query["metadata.slowa_kluczowe"] = {"$in": keywords}
+
+    if section_type:
+        filter_query["metadata.section_type"] = section_type
+
+    return filter_query
+
+
 class SearchResult(BaseModel):
     """Model for search results."""
 
@@ -27,15 +75,27 @@ class SearchResult(BaseModel):
 async def semantic_search(
     ctx: RunContext[AgentDependencies],
     query: str,
-    match_count: Optional[int] = None
+    match_count: Optional[int] = None,
+    document_type: Optional[str] = None,
+    author: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    keywords: Optional[List[str]] = None,
+    section_type: Optional[str] = None
 ) -> List[SearchResult]:
     """
-    Perform pure semantic search using MongoDB vector similarity.
+    Perform pure semantic search using MongoDB vector similarity with optional metadata filtering.
 
     Args:
         ctx: Agent runtime context with dependencies
         query: Search query text
         match_count: Number of results to return (default: 10)
+        document_type: Filter by document type (e.g., "KDIP2", "KDIB1-3")
+        author: Filter by author
+        date_from: Filter by document date (from, inclusive)
+        date_to: Filter by document date (to, inclusive)
+        keywords: Filter by keywords (any match)
+        section_type: Filter by section type (e.g., "przepis", "zagadnienie")
 
     Returns:
         List of search results ordered by similarity
@@ -56,40 +116,58 @@ async def semantic_search(
         # Generate embedding for query (already returns list[float])
         query_embedding = await deps.get_embedding(query)
 
+        # Build metadata filter
+        metadata_filter = build_metadata_filter(
+            document_type=document_type,
+            author=author,
+            date_from=date_from,
+            date_to=date_to,
+            keywords=keywords,
+            section_type=section_type
+        )
+
         # Build MongoDB aggregation pipeline
-        pipeline = [
-            {
-                "$vectorSearch": {
-                    "index": deps.settings.mongodb_vector_index,
-                    "queryVector": query_embedding,
-                    "path": "embedding",
-                    "numCandidates": 100,  # Search space (10x limit is good default)
-                    "limit": match_count
-                }
-            },
-            {
-                "$lookup": {
-                    "from": deps.settings.mongodb_collection_documents,
-                    "localField": "document_id",
-                    "foreignField": "_id",
-                    "as": "document_info"
-                }
-            },
-            {
-                "$unwind": "$document_info"
-            },
-            {
-                "$project": {
-                    "chunk_id": "$_id",
-                    "document_id": 1,
-                    "content": 1,
-                    "similarity": {"$meta": "vectorSearchScore"},
-                    "metadata": 1,
-                    "document_title": "$document_info.title",
-                    "document_source": "$document_info.source"
-                }
+        pipeline = []
+
+        # Add $match stage before $vectorSearch if filters are specified
+        # Note: $vectorSearch must be the first stage, so we filter after
+        # For vector search, we'll filter in a $match stage after $vectorSearch
+        pipeline.append({
+            "$vectorSearch": {
+                "index": deps.settings.mongodb_vector_index,
+                "queryVector": query_embedding,
+                "path": "embedding",
+                "numCandidates": 100,  # Search space (10x limit is good default)
+                "limit": match_count * 2 if metadata_filter else match_count  # Over-fetch if filtering
             }
-        ]
+        })
+
+        # Add $match stage after vector search to apply metadata filters
+        if metadata_filter:
+            pipeline.append({"$match": metadata_filter})
+        
+        pipeline.append({
+            "$lookup": {
+                "from": deps.settings.mongodb_collection_documents,
+                "localField": "document_id",
+                "foreignField": "_id",
+                "as": "document_info"
+            }
+        })
+        pipeline.append({
+            "$unwind": "$document_info"
+        })
+        pipeline.append({
+            "$project": {
+                "chunk_id": "$_id",
+                "document_id": 1,
+                "content": 1,
+                "similarity": {"$meta": "vectorSearchScore"},
+                "metadata": 1,
+                "document_title": "$document_info.title",
+                "document_source": "$document_info.source"
+            }
+        })
 
         # Execute aggregation
         collection = deps.db[deps.settings.mongodb_collection_chunks]
@@ -131,10 +209,16 @@ async def semantic_search(
 async def text_search(
     ctx: RunContext[AgentDependencies],
     query: str,
-    match_count: Optional[int] = None
+    match_count: Optional[int] = None,
+    document_type: Optional[str] = None,
+    author: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    keywords: Optional[List[str]] = None,
+    section_type: Optional[str] = None
 ) -> List[SearchResult]:
     """
-    Perform full-text search using MongoDB Atlas Search.
+    Perform full-text search using MongoDB Atlas Search with optional metadata filtering.
 
     Uses $search operator for keyword matching, fuzzy matching, and phrase matching.
     Works on all Atlas tiers including M0 (free tier).
@@ -143,6 +227,12 @@ async def text_search(
         ctx: Agent runtime context with dependencies
         query: Search query text
         match_count: Number of results to return (default: 10)
+        document_type: Filter by document type (e.g., "KDIP2", "KDIB1-3")
+        author: Filter by author
+        date_from: Filter by document date (from, inclusive)
+        date_to: Filter by document date (to, inclusive)
+        keywords: Filter by keywords (any match)
+        section_type: Filter by section type (e.g., "przepis", "zagadnienie")
 
     Returns:
         List of search results ordered by text relevance
@@ -160,6 +250,16 @@ async def text_search(
         # Validate match count
         match_count = min(match_count, deps.settings.max_match_count)
 
+        # Build metadata filter
+        metadata_filter = build_metadata_filter(
+            document_type=document_type,
+            author=author,
+            date_from=date_from,
+            date_to=date_to,
+            keywords=keywords,
+            section_type=section_type
+        )
+
         # Build MongoDB Atlas Search aggregation pipeline
         pipeline = [
             {
@@ -175,32 +275,37 @@ async def text_search(
                     }
                 }
             },
-            {
-                "$limit": match_count * 2  # Over-fetch for better RRF results
-            },
-            {
-                "$lookup": {
-                    "from": deps.settings.mongodb_collection_documents,
-                    "localField": "document_id",
-                    "foreignField": "_id",
-                    "as": "document_info"
-                }
-            },
-            {
-                "$unwind": "$document_info"
-            },
-            {
-                "$project": {
-                    "chunk_id": "$_id",
-                    "document_id": 1,
-                    "content": 1,
-                    "similarity": {"$meta": "searchScore"},  # Text relevance score
-                    "metadata": 1,
-                    "document_title": "$document_info.title",
-                    "document_source": "$document_info.source"
-                }
-            }
         ]
+
+        # Add $match stage after $search to apply metadata filters
+        if metadata_filter:
+            pipeline.append({"$match": metadata_filter})
+
+        pipeline.append({
+            "$limit": match_count * 2  # Over-fetch for better RRF results
+        })
+        pipeline.append({
+            "$lookup": {
+                "from": deps.settings.mongodb_collection_documents,
+                "localField": "document_id",
+                "foreignField": "_id",
+                "as": "document_info"
+            }
+        })
+        pipeline.append({
+            "$unwind": "$document_info"
+        })
+        pipeline.append({
+            "$project": {
+                "chunk_id": "$_id",
+                "document_id": 1,
+                "content": 1,
+                "similarity": {"$meta": "searchScore"},  # Text relevance score
+                "metadata": 1,
+                "document_title": "$document_info.title",
+                "document_source": "$document_info.source"
+            }
+        })
 
         # Execute aggregation
         collection = deps.db[deps.settings.mongodb_collection_chunks]
@@ -317,10 +422,16 @@ async def hybrid_search(
     ctx: RunContext[AgentDependencies],
     query: str,
     match_count: Optional[int] = None,
-    text_weight: Optional[float] = None
+    text_weight: Optional[float] = None,
+    document_type: Optional[str] = None,
+    author: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    keywords: Optional[List[str]] = None,
+    section_type: Optional[str] = None
 ) -> List[SearchResult]:
     """
-    Perform hybrid search combining semantic and keyword matching.
+    Perform hybrid search combining semantic and keyword matching with optional metadata filtering.
 
     Uses manual Reciprocal Rank Fusion (RRF) to merge vector and text search results.
     Works on all Atlas tiers including M0 (free tier) - no M10+ required!
@@ -330,6 +441,12 @@ async def hybrid_search(
         query: Search query text
         match_count: Number of results to return (default: 10)
         text_weight: Weight for text matching (0-1, not used with RRF)
+        document_type: Filter by document type (e.g., "KDIP2", "KDIB1-3")
+        author: Filter by author
+        date_from: Filter by document date (from, inclusive)
+        date_to: Filter by document date (to, inclusive)
+        keywords: Filter by keywords (any match)
+        section_type: Filter by section type (e.g., "przepis", "zagadnienie")
 
     Returns:
         List of search results sorted by combined RRF score
@@ -355,10 +472,26 @@ async def hybrid_search(
 
         logger.info(f"hybrid_search starting: query='{query}', match_count={match_count}")
 
-        # Run both searches concurrently for performance
+        # Run both searches concurrently for performance with metadata filters
         semantic_results, text_results = await asyncio.gather(
-            semantic_search(ctx, query, fetch_count),
-            text_search(ctx, query, fetch_count),
+            semantic_search(
+                ctx, query, fetch_count,
+                document_type=document_type,
+                author=author,
+                date_from=date_from,
+                date_to=date_to,
+                keywords=keywords,
+                section_type=section_type
+            ),
+            text_search(
+                ctx, query, fetch_count,
+                document_type=document_type,
+                author=author,
+                date_from=date_from,
+                date_to=date_to,
+                keywords=keywords,
+                section_type=section_type
+            ),
             return_exceptions=True  # Don't fail if one search errors
         )
 

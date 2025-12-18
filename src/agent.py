@@ -44,21 +44,41 @@ async def search_knowledge_base(
     ctx: RunContext[StateDeps[RAGState]],
     query: str,
     match_count: Optional[int] = 5,
-    search_type: Optional[str] = "hybrid"
+    search_type: Optional[str] = "hybrid",
+    document_type: Optional[str] = None,
+    author: Optional[str] = None,
+    date_from: Optional[str] = None,
+    date_to: Optional[str] = None,
+    keywords: Optional[List[str]] = None,
+    section_type: Optional[str] = None
 ) -> str:
     """
-    Search the knowledge base for relevant information.
+    Search the knowledge base for relevant information with optional metadata filtering.
+
+    Supports filtering by document type, author, date range, keywords, and section type.
+    This is especially useful for Polish tax interpretation documents.
 
     Args:
         ctx: Agent runtime context with state dependencies
         query: Search query text
         match_count: Number of results to return (default: 5)
         search_type: Type of search - "semantic" or "text" or "hybrid" (default: hybrid)
+        document_type: Filter by document type (e.g., "KDIP2", "KDIB1-3")
+        author: Filter by author (e.g., "DK", "AZ")
+        date_from: Filter by document date from (YYYY-MM-DD format, inclusive)
+        date_to: Filter by document date to (YYYY-MM-DD format, inclusive)
+        keywords: Filter by keywords (list of strings, matches any)
+        section_type: Filter by section type (e.g., "przepis", "zagadnienie", "interpretation", "analysis")
 
     Returns:
         String containing the retrieved information formatted for the LLM with citation markers [1], [2], etc.
     """
-    logger.info(f"search_knowledge_base called: query='{query[:100]}', type={search_type}, match_count={match_count}")
+    logger.info(
+        f"search_knowledge_base called: query='{query[:100]}', type={search_type}, "
+        f"match_count={match_count}, filters={{document_type={document_type}, "
+        f"author={author}, date_from={date_from}, date_to={date_to}, "
+        f"keywords={keywords}, section_type={section_type}}}"
+    )
     try:
         # Initialize database connection
         agent_deps = AgentDependencies()
@@ -71,24 +91,42 @@ async def search_knowledge_base(
 
         deps_ctx = DepsWrapper(agent_deps)
 
-        # Perform the search based on type
+        # Perform the search based on type with metadata filters
         if search_type == "hybrid":
             results = await hybrid_search(
                 ctx=deps_ctx,
                 query=query,
-                match_count=match_count
+                match_count=match_count,
+                document_type=document_type,
+                author=author,
+                date_from=date_from,
+                date_to=date_to,
+                keywords=keywords,
+                section_type=section_type
             )
         elif search_type == "semantic":
             results = await semantic_search(
                 ctx=deps_ctx,
                 query=query,
-                match_count=match_count
+                match_count=match_count,
+                document_type=document_type,
+                author=author,
+                date_from=date_from,
+                date_to=date_to,
+                keywords=keywords,
+                section_type=section_type
             )
         else:
             results = await text_search(
                 ctx=deps_ctx,
                 query=query,
-                match_count=match_count
+                match_count=match_count,
+                document_type=document_type,
+                author=author,
+                date_from=date_from,
+                date_to=date_to,
+                keywords=keywords,
+                section_type=section_type
             )
 
         # Clean up
@@ -107,18 +145,28 @@ async def search_knowledge_base(
             doc_id = result.document_id
             if doc_id not in unique_documents:
                 citation_num = len(unique_documents) + 1
-                unique_documents[doc_id] = {
+                
+                # Extract document metadata for citations
+                doc_metadata = result.metadata
+                citation_info = {
                     'citation_number': citation_num,
                     'title': result.document_title,
                     'source': result.document_source,
                     'document_id': doc_id
                 }
-                citation_metadata.append({
-                    'citation_number': citation_num,
-                    'title': result.document_title,
-                    'source': result.document_source,
-                    'document_id': doc_id
-                })
+                
+                # Add tax interpretation metadata if available
+                if doc_metadata.get('id_informacji'):
+                    citation_info['id_informacji'] = doc_metadata['id_informacji']
+                if doc_metadata.get('sygnatura'):
+                    citation_info['sygnatura'] = doc_metadata['sygnatura']
+                if doc_metadata.get('document_type'):
+                    citation_info['document_type'] = doc_metadata['document_type']
+                if doc_metadata.get('document_date'):
+                    citation_info['document_date'] = doc_metadata['document_date']
+                
+                unique_documents[doc_id] = citation_info
+                citation_metadata.append(citation_info)
 
         # Store citation metadata for this tool call
         # Generate a unique call ID for this tool invocation

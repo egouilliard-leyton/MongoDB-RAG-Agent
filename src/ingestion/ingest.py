@@ -22,6 +22,12 @@ from dotenv import load_dotenv
 
 from src.ingestion.chunker import ChunkingConfig, create_chunker, DocumentChunk
 from src.ingestion.embedder import create_embedder
+from src.ingestion.metadata_extractor import (
+    extract_tax_interpretation_metadata,
+    extract_structured_metadata,
+    extract_title_enhanced
+)
+from src.ingestion.section_identifier import get_section_count
 from src.settings import load_settings
 
 # Load environment variables
@@ -56,7 +62,8 @@ class DocumentIngestionPipeline:
         self,
         config: IngestionConfig,
         documents_folder: str = "documents",
-        clean_before_ingest: bool = True
+        clean_before_ingest: bool = True,
+        dry_run: bool = False
     ):
         """
         Initialize ingestion pipeline.
@@ -65,10 +72,12 @@ class DocumentIngestionPipeline:
             config: Ingestion configuration
             documents_folder: Folder containing documents
             clean_before_ingest: Whether to clean existing data before ingestion
+            dry_run: If True, process documents but don't save to MongoDB
         """
         self.config = config
         self.documents_folder = documents_folder
         self.clean_before_ingest = clean_before_ingest
+        self.dry_run = dry_run
 
         # Load settings
         self.settings = load_settings()
@@ -102,6 +111,12 @@ class DocumentIngestionPipeline:
             return
 
         logger.info("Initializing ingestion pipeline...")
+
+        # Skip MongoDB connection in dry-run mode
+        if self.dry_run:
+            logger.info("[DRY-RUN] Skipping MongoDB connection")
+            self._initialized = True
+            return
 
         try:
             # Initialize MongoDB client
@@ -299,26 +314,26 @@ class DocumentIngestionPipeline:
                 None
             )
 
-    def _extract_title(self, content: str, file_path: str) -> str:
+    def _extract_title(self, content: str, file_path: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """
-        Extract title from document content or filename.
+        Extract title from document content or filename using enhanced extraction.
+
+        Uses multiple strategies:
+        1. From metadata['tytul_teza'] (best - the actual question/title)
+        2. Parse header section directly
+        3. Use document number + type from filename
+        4. First H2 heading
+        5. Fallback to filename
 
         Args:
             content: Document content
             file_path: Path to the document file
+            metadata: Optional pre-extracted metadata dictionary
 
         Returns:
             Document title
         """
-        # Try to find markdown title
-        lines = content.split('\n')
-        for line in lines[:10]:  # Check first 10 lines
-            line = line.strip()
-            if line.startswith('# '):
-                return line[2:].strip()
-
-        # Fallback to filename
-        return os.path.splitext(os.path.basename(file_path))[0]
+        return extract_title_enhanced(content, file_path, metadata)
 
     def _extract_document_metadata(
         self,
@@ -328,6 +343,11 @@ class DocumentIngestionPipeline:
         """
         Extract metadata from document content.
 
+        Extracts structured metadata from:
+        1. Document header (for tax interpretation documents)
+        2. Filename pattern
+        3. Basic file metadata
+
         Args:
             content: Document content
             file_path: Path to the document file
@@ -335,13 +355,32 @@ class DocumentIngestionPipeline:
         Returns:
             Document metadata dictionary
         """
+        # Base metadata
         metadata = {
             "file_path": file_path,
             "file_size": len(content),
             "ingestion_date": datetime.now().isoformat()
         }
 
-        # Try to extract YAML frontmatter
+        # Extract structured metadata from tax interpretation header
+        try:
+            tax_metadata = extract_tax_interpretation_metadata(content, file_path)
+            if tax_metadata:
+                metadata.update(tax_metadata)
+                logger.debug(f"Extracted tax interpretation metadata: {list(tax_metadata.keys())}")
+        except Exception as e:
+            logger.warning(f"Failed to extract tax interpretation metadata: {e}")
+
+        # Extract metadata from filename
+        try:
+            filename_metadata = extract_structured_metadata(file_path)
+            if filename_metadata:
+                metadata.update(filename_metadata)
+                logger.debug(f"Extracted filename metadata: {list(filename_metadata.keys())}")
+        except Exception as e:
+            logger.warning(f"Failed to extract filename metadata: {e}")
+
+        # Try to extract YAML frontmatter (for backward compatibility)
         if content.startswith('---'):
             try:
                 import yaml
@@ -362,6 +401,13 @@ class DocumentIngestionPipeline:
         lines = content.split('\n')
         metadata['line_count'] = len(lines)
         metadata['word_count'] = len(content.split())
+
+        # Add section count (number of H2 headings/sections)
+        try:
+            section_count = get_section_count(content)
+            metadata['section_count'] = section_count
+        except Exception as e:
+            logger.warning(f"Failed to count sections: {e}")
 
         return metadata
 
@@ -384,23 +430,30 @@ class DocumentIngestionPipeline:
             metadata: Document metadata
 
         Returns:
-            Document ID (ObjectId as string)
+            Document ID (ObjectId as string) or "dry-run-<timestamp>" in dry-run mode
 
         Raises:
             Exception: If MongoDB operations fail
         """
+        # Dry-run mode: don't save to MongoDB
+        if self.dry_run:
+            fake_id = f"dry-run-{datetime.now().timestamp()}"
+            logger.info(f"[DRY-RUN] Would insert document: {title}")
+            logger.info(f"[DRY-RUN] Would insert {len(chunks)} chunks")
+            return fake_id
+        
         # Get collection references
         documents_collection = self.db[
             self.settings.mongodb_collection_documents
         ]
         chunks_collection = self.db[self.settings.mongodb_collection_chunks]
 
-        # Insert document
+        # Insert document with enhanced metadata structure
         document_dict = {
             "title": title,
             "source": source,
             "content": content,
-            "metadata": metadata,
+            "metadata": metadata,  # Already contains structured metadata from extractors
             "created_at": datetime.now()
         }
 
@@ -409,22 +462,42 @@ class DocumentIngestionPipeline:
 
         logger.info(f"Inserted document with ID: {document_id}")
 
-        # Insert chunks with embeddings as Python lists
+        # Prepare denormalized document metadata for chunks (for filtering)
+        # Extract key fields that should be denormalized into chunks
+        denormalized_doc_metadata = {}
+        if "document_type" in metadata:
+            denormalized_doc_metadata["document_type"] = metadata["document_type"]
+        if "document_date" in metadata:
+            denormalized_doc_metadata["document_date"] = metadata["document_date"]
+        if "id_informacji" in metadata:
+            denormalized_doc_metadata["id_informacji"] = metadata["id_informacji"]
+        if "slowa_kluczowe" in metadata:
+            denormalized_doc_metadata["slowa_kluczowe"] = metadata["slowa_kluczowe"]
+        if "author" in metadata:
+            denormalized_doc_metadata["author"] = metadata["author"]
+
+        # Insert chunks with embeddings and enhanced metadata
         chunk_dicts = []
         for chunk in chunks:
+            # Merge chunk metadata with denormalized document metadata
+            enhanced_chunk_metadata = {
+                **chunk.metadata,
+                **denormalized_doc_metadata  # Denormalize for filtering
+            }
+
             chunk_dict = {
                 "document_id": document_id,
                 "content": chunk.content,
                 "embedding": chunk.embedding,  # Python list, NOT string!
                 "chunk_index": chunk.index,
-                "metadata": chunk.metadata,
+                "metadata": enhanced_chunk_metadata,  # Enhanced with denormalized doc metadata
                 "token_count": chunk.token_count,
                 "created_at": datetime.now()
             }
             chunk_dicts.append(chunk_dict)
 
         # Batch insert with ordered=False for partial success
-        if chunk_dicts:
+        if chunk_dicts and not self.dry_run:
             await chunks_collection.insert_many(chunk_dicts, ordered=False)
             logger.info(f"Inserted {len(chunk_dicts)} chunks")
 
@@ -462,13 +535,19 @@ class DocumentIngestionPipeline:
 
         # Read document (returns tuple: content, docling_doc)
         document_content, docling_doc = self._read_document(file_path)
-        document_title = self._extract_title(document_content, file_path)
         document_source = os.path.relpath(file_path, self.documents_folder)
 
-        # Extract metadata from content
+        # Extract metadata from content (includes tax interpretation metadata)
         document_metadata = self._extract_document_metadata(
             document_content,
             file_path
+        )
+
+        # Extract title using enhanced extraction (can use metadata)
+        document_title = self._extract_title(
+            document_content,
+            file_path,
+            metadata=document_metadata
         )
 
         logger.info(f"Processing document: {document_title}")
@@ -540,9 +619,11 @@ class DocumentIngestionPipeline:
         if not self._initialized:
             await self.initialize()
 
-        # Clean existing data if requested
-        if self.clean_before_ingest:
+        # Clean existing data if requested (skip in dry-run)
+        if self.clean_before_ingest and not self.dry_run:
             await self._clean_databases()
+        elif self.clean_before_ingest and self.dry_run:
+            logger.info("[DRY-RUN] Would clean existing data")
 
         # Find all supported document files
         document_files = self._find_document_files()
@@ -629,6 +710,11 @@ async def main() -> None:
         action="store_true",
         help="Enable verbose logging"
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Process documents but don't save to MongoDB (for testing)"
+    )
 
     args = parser.parse_args()
 
@@ -651,8 +737,12 @@ async def main() -> None:
     pipeline = DocumentIngestionPipeline(
         config=config,
         documents_folder=args.documents,
-        clean_before_ingest=not args.no_clean  # Clean by default
+        clean_before_ingest=not args.no_clean,  # Clean by default
+        dry_run=args.dry_run
     )
+    
+    if args.dry_run:
+        print("\n[DRY-RUN MODE] Documents will be processed but not saved to MongoDB")
 
     def progress_callback(current: int, total: int) -> None:
         print(f"Progress: {current}/{total} documents processed")

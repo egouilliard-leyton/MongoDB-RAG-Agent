@@ -24,6 +24,12 @@ from transformers import AutoTokenizer
 from docling.chunking import HybridChunker
 from docling_core.types.doc import DoclingDocument
 
+from src.ingestion.section_identifier import (
+    identify_sections,
+    extract_section_content,
+    classify_section
+)
+
 # Load environment variables
 load_dotenv()
 
@@ -99,6 +105,232 @@ class DoclingHybridChunker:
 
         logger.info(f"HybridChunker initialized (max_tokens={config.max_tokens})")
 
+    def _is_tax_interpretation(self, metadata: Optional[Dict[str, Any]] = None) -> bool:
+        """
+        Check if document is a Polish tax interpretation.
+
+        Args:
+            metadata: Document metadata
+
+        Returns:
+            True if document appears to be a tax interpretation
+        """
+        if not metadata:
+            return False
+
+        # Check for tax interpretation indicators
+        return (
+            metadata.get('kategoria') == 'Interpretacja indywidualna' or
+            metadata.get('id_informacji') is not None or
+            metadata.get('sygnatura') is not None
+        )
+
+    async def chunk_tax_interpretation(
+        self,
+        content: str,
+        docling_doc: DoclingDocument,
+        sections: List[Dict],
+        title: str,
+        source: str,
+        metadata: Dict[str, Any]
+    ) -> List[DocumentChunk]:
+        """
+        Chunk Polish tax interpretation with section awareness.
+
+        Uses variable token limits based on section type:
+        - Header: single chunk, 200 token limit
+        - Przepis/Zagadnienie: single chunk, 400 token limit
+        - Main content: HybridChunker with 800 token limit
+
+        Args:
+            content: Document content (markdown format)
+            docling_doc: DoclingDocument for HybridChunker
+            sections: List of section dictionaries from identify_sections()
+            title: Document title
+            source: Document source
+            metadata: Document metadata
+
+        Returns:
+            List of document chunks with section metadata
+        """
+        chunks = []
+        base_metadata = {
+            "title": title,
+            "source": source,
+            "chunk_method": "section_aware_hybrid",
+            **(metadata or {})
+        }
+
+        current_pos = 0
+        chunk_index = 0
+
+        for section_idx, section in enumerate(sections):
+            section_content = extract_section_content(content, section)
+            section_type = section['type']
+            section_title = section['title']
+
+            # Determine token limit based on section type
+            if section_type == 'header':
+                token_limit = 200
+                # Header: Single chunk, no chunking needed
+                token_count = len(self.tokenizer.encode(section_content))
+                if token_count > token_limit:
+                    # Truncate if too long (shouldn't happen for headers)
+                    encoded = self.tokenizer.encode(section_content)
+                    truncated_encoded = encoded[:token_limit]
+                    section_content = self.tokenizer.decode(truncated_encoded, skip_special_tokens=True)
+                    token_count = len(truncated_encoded)
+
+                chunk_metadata = {
+                    **base_metadata,
+                    "section_type": section_type,
+                    "section_title": section_title,
+                    "section_index": section_idx,
+                    "is_header": True,
+                    "is_main_content": False,
+                    "token_count": token_count
+                }
+
+                start_char = current_pos
+                end_char = start_char + len(section_content)
+
+                chunks.append(DocumentChunk(
+                    content=section_content.strip(),
+                    index=chunk_index,
+                    start_char=start_char,
+                    end_char=end_char,
+                    metadata=chunk_metadata,
+                    token_count=token_count
+                ))
+
+                chunk_index += 1
+                current_pos = end_char
+
+            elif section_type in ['przepis', 'zagadnienie']:
+                # Short sections: Single chunk with 400 token limit
+                token_limit = 400
+                token_count = len(self.tokenizer.encode(section_content))
+                if token_count > token_limit:
+                    # Truncate if too long
+                    encoded = self.tokenizer.encode(section_content)
+                    truncated_encoded = encoded[:token_limit]
+                    section_content = self.tokenizer.decode(truncated_encoded, skip_special_tokens=True)
+                    token_count = len(truncated_encoded)
+
+                chunk_metadata = {
+                    **base_metadata,
+                    "section_type": section_type,
+                    "section_title": section_title,
+                    "section_index": section_idx,
+                    "is_header": False,
+                    "is_main_content": False,
+                    "token_count": token_count
+                }
+
+                start_char = current_pos
+                end_char = start_char + len(section_content)
+
+                chunks.append(DocumentChunk(
+                    content=section_content.strip(),
+                    index=chunk_index,
+                    start_char=start_char,
+                    end_char=end_char,
+                    metadata=chunk_metadata,
+                    token_count=token_count
+                ))
+
+                chunk_index += 1
+                current_pos = end_char
+
+            else:
+                # Main content: Use HybridChunker with larger token limit (800)
+                # Create a temporary HybridChunker with higher token limit
+                section_chunker = HybridChunker(
+                    tokenizer=self.tokenizer,
+                    max_tokens=800,  # Larger for main content
+                    merge_peers=True
+                )
+
+                try:
+                    # For section-level chunking, we need to work with the full doc
+                    # but filter chunks to this section. Since HybridChunker works
+                    # on DoclingDocument, we'll chunk the section content separately
+                    # by creating a simplified approach for section content
+
+                    # Use tokenizer-based chunking for sections (simpler approach)
+                    encoded_section = self.tokenizer.encode(section_content)
+                    token_limit = 800
+
+                    section_start = 0
+                    while section_start < len(encoded_section):
+                        section_end = min(section_start + token_limit, len(encoded_section))
+                        section_tokens = encoded_section[section_start:section_end]
+                        section_text = self.tokenizer.decode(section_tokens, skip_special_tokens=True)
+
+                        token_count = len(section_tokens)
+
+                        chunk_metadata = {
+                            **base_metadata,
+                            "section_type": section_type,
+                            "section_title": section_title,
+                            "section_index": section_idx,
+                            "is_header": False,
+                            "is_main_content": True,
+                            "token_count": token_count
+                        }
+
+                        start_char = current_pos
+                        end_char = start_char + len(section_text)
+
+                        chunks.append(DocumentChunk(
+                            content=section_text.strip(),
+                            index=chunk_index,
+                            start_char=start_char,
+                            end_char=end_char,
+                            metadata=chunk_metadata,
+                            token_count=token_count
+                        ))
+
+                        chunk_index += 1
+                        current_pos = end_char
+                        section_start = section_end
+
+                except Exception as e:
+                    logger.warning(f"Failed to chunk section {section_title} with HybridChunker: {e}")
+                    # Fallback to simple chunking for this section
+                    token_count = len(self.tokenizer.encode(section_content))
+                    chunk_metadata = {
+                        **base_metadata,
+                        "section_type": section_type,
+                        "section_title": section_title,
+                        "section_index": section_idx,
+                        "is_header": False,
+                        "is_main_content": True,
+                        "token_count": token_count
+                    }
+
+                    start_char = current_pos
+                    end_char = start_char + len(section_content)
+
+                    chunks.append(DocumentChunk(
+                        content=section_content.strip(),
+                        index=chunk_index,
+                        start_char=start_char,
+                        end_char=end_char,
+                        metadata=chunk_metadata,
+                        token_count=token_count
+                    ))
+
+                    chunk_index += 1
+                    current_pos = end_char
+
+        # Update total chunks
+        for chunk in chunks:
+            chunk.metadata["total_chunks"] = len(chunks)
+
+        logger.info(f"Created {len(chunks)} chunks using section-aware chunking")
+        return chunks
+
     async def chunk_document(
         self,
         content: str,
@@ -129,6 +361,24 @@ class DoclingHybridChunker:
             "chunk_method": "hybrid",
             **(metadata or {})
         }
+
+        # Check if this is a tax interpretation document
+        if self._is_tax_interpretation(metadata) and docling_doc is not None:
+            try:
+                # Use section-aware chunking for tax interpretations
+                sections = identify_sections(content)
+                if sections:
+                    logger.info(f"Using section-aware chunking for tax interpretation ({len(sections)} sections)")
+                    return await self.chunk_tax_interpretation(
+                        content=content,
+                        docling_doc=docling_doc,
+                        sections=sections,
+                        title=title,
+                        source=source,
+                        metadata=metadata or {}
+                    )
+            except Exception as e:
+                logger.warning(f"Section-aware chunking failed: {e}, falling back to standard chunking")
 
         # If we don't have a DoclingDocument, we need to create one from markdown
         if docling_doc is None:
