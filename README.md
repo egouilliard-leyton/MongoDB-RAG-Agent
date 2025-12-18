@@ -10,6 +10,7 @@ Agentic RAG system combining MongoDB Atlas Vector Search with Pydantic AI for in
 - **Multi-Format Ingestion**: PDF, Word, PowerPoint, Excel, HTML, Markdown, Audio transcription
 - **Intelligent Chunking**: Docling HybridChunker preserves document structure and semantic boundaries
 - **Conversational CLI**: Rich-based interface with real-time streaming and tool call visibility
+- **Web Interface**: Streamlit-based chat interface for easy access via browser
 - **Multiple LLM Support**: OpenAI, OpenRouter, Ollama, Gemini
 - **Cost Effective**: Runs entirely on MongoDB Atlas free tier (M0)
 
@@ -142,11 +143,19 @@ Wait 1-5 minutes for both indexes to build (status: "Building" → "Active").
 
 ### 8. Run the Agent
 
+You can use either the CLI or the web interface:
+
+**Option A: Command Line Interface (CLI)**
 ```bash
 uv run python -m src.cli
 ```
 
-Now you can ask questions and the agent will search your knowledge base!
+**Option B: Web Interface (Streamlit)**
+```bash
+uv run streamlit run src/streamlit_app.py
+```
+
+The Streamlit app will open in your browser at `http://localhost:8501`. You can now ask questions and the agent will search your knowledge base!
 
 ## Project Structure
 
@@ -160,6 +169,7 @@ MongoDB-RAG-Agent/
 │   ├── tools.py                  # ✅ Search tools (semantic, text, hybrid RRF)
 │   ├── agent.py                  # ✅ Pydantic AI agent with search tools
 │   ├── cli.py                    # ✅ Rich-based conversational CLI
+│   ├── streamlit_app.py          # ✅ Streamlit web interface
 │   ├── prompts.py                # ✅ System prompts
 │   └── ingestion/
 │       ├── chunker.py            # ✅ Docling HybridChunker wrapper
@@ -187,6 +197,7 @@ MongoDB-RAG-Agent/
 - **Document Processing**: Docling 2.14+ (PDF, Word, PowerPoint, Excel, Audio)
 - **Async Driver**: PyMongo 4.10+ with native async API
 - **CLI**: Rich 13.9+ (terminal formatting and streaming)
+- **Web UI**: Streamlit 1.28+ (browser-based chat interface)
 - **Package Manager**: UV 0.5.0+ (fast dependency management)
 
 ## Hybrid Search Implementation
@@ -225,3 +236,20 @@ You: What is NeuralFlow AI's revenue goal for 2025?
     Type: hybrid
     Results: 5
   [Search completed successfully]
+```
+
+### Web Interface (Streamlit)
+
+```bash
+uv run streamlit run src/streamlit_app.py
+```
+
+The web interface provides:
+- **Chat Interface**: Clean, browser-based conversation UI
+- **Real-time Streaming**: See responses as they're generated
+- **Tool Call Visibility**: Expandable sections showing search queries and results
+- **Citation Links**: Clickable links to source documents
+- **System Info**: Sidebar with configuration details
+- **Clear Chat**: Reset conversation history with one click
+
+Simply open your browser to `http://localhost:8501` and start chatting!
