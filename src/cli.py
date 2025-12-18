@@ -241,14 +241,45 @@ async def _stream_agent(
 
                             console.print(f"  [cyan]Calling tool:[/cyan] [bold]{tool_name}[/bold]")
 
-                            # Show search query if it's a search tool
+                            # Show tool-specific information
                             if args and isinstance(args, dict):
-                                if 'query' in args:
+                                # Decomposition tool
+                                if tool_name == "decompose_question" and 'question' in args:
+                                    console.print(f"    [dim]Analyzing question:[/dim] {args['question']}")
+                                
+                                # Multi-search tool
+                                elif tool_name == "multi_search_knowledge_base":
+                                    if 'queries' in args:
+                                        queries = args['queries']
+                                        console.print(f"    [dim]Sub-queries ({len(queries)}):[/dim]")
+                                        for i, q in enumerate(queries[:5], 1):  # Show first 5
+                                            console.print(f"      {i}. {q}")
+                                        if len(queries) > 5:
+                                            console.print(f"      ... and {len(queries) - 5} more")
+                                    if 'match_count_per_query' in args:
+                                        console.print(f"    [dim]Results per query:[/dim] {args['match_count_per_query']}")
+                                    if 'search_type' in args:
+                                        console.print(f"    [dim]Search type:[/dim] {args['search_type']}")
+                                
+                                # Refine search tool
+                                elif tool_name == "refine_search":
+                                    if 'original_query' in args:
+                                        console.print(f"    [dim]Original query:[/dim] {args['original_query']}")
+                                    if 'refinement_goal' in args:
+                                        console.print(f"    [dim]Refinement goal:[/dim] {args['refinement_goal']}")
+                                    if 'previous_results_summary' in args:
+                                        summary = args['previous_results_summary']
+                                        if len(summary) > 100:
+                                            summary = summary[:97] + "..."
+                                        console.print(f"    [dim]Previous results:[/dim] {summary}")
+                                
+                                # Standard search tool
+                                elif 'query' in args:
                                     console.print(f"    [dim]Query:[/dim] {args['query']}")
-                                if 'search_type' in args:
-                                    console.print(f"    [dim]Type:[/dim] {args['search_type']}")
-                                if 'match_count' in args:
-                                    console.print(f"    [dim]Results:[/dim] {args['match_count']}")
+                                    if 'search_type' in args:
+                                        console.print(f"    [dim]Type:[/dim] {args['search_type']}")
+                                    if 'match_count' in args:
+                                        console.print(f"    [dim]Results:[/dim] {args['match_count']}")
                             elif args:
                                 args_str = str(args)
                                 if len(args_str) > 100:
@@ -256,7 +287,22 @@ async def _stream_agent(
                                 console.print(f"    [dim]Args: {args_str}[/dim]")
 
                         elif event_type == "FunctionToolResultEvent":
-                            console.print(f"  [green]Search completed successfully[/green]")
+                            # Determine completion message based on tool type
+                            if tool_result_text and hasattr(event, 'part'):
+                                part = event.part
+                                tool_name = getattr(part, 'tool_name', getattr(part, 'name', 'Unknown'))
+                                
+                                if tool_name == "decompose_question":
+                                    console.print(f"  [green]✓ Question analysis completed[/green]")
+                                elif tool_name == "multi_search_knowledge_base":
+                                    console.print(f"  [green]✓ Multi-search completed successfully[/green]")
+                                elif tool_name == "refine_search":
+                                    console.print(f"  [green]✓ Search refinement completed[/green]")
+                                else:
+                                    console.print(f"  [green]✓ Search completed successfully[/green]")
+                            else:
+                                console.print(f"  [green]✓ Tool execution completed[/green]")
+                            
                             # Extract tool result text if available
                             if hasattr(event, 'result'):
                                 tool_result_text = str(event.result)

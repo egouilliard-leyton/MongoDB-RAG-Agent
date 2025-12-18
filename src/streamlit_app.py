@@ -5,6 +5,7 @@ import asyncio
 import re
 import os
 import sys
+import logging
 from typing import List, Dict, Set, Optional
 from pathlib import Path
 from urllib.parse import quote
@@ -26,6 +27,17 @@ from src.settings import load_settings
 
 # Load environment variables
 load_dotenv(override=True)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('rag_agent.log')
+    ]
+)
+logger = logging.getLogger(__name__)
 
 # Page configuration
 st.set_page_config(
@@ -155,6 +167,7 @@ async def stream_agent_response(
     Returns:
         Tuple of (response_text, new_messages, citations, tool_calls)
     """
+    logger.info(f"Starting agent response for query: {user_input[:100]}")
     response_text = ""
     all_citations: List[Dict[str, str]] = []
     tool_calls: List[Dict] = []
@@ -169,6 +182,7 @@ async def stream_agent_response(
             async for node in run:
                 # Handle user prompt node
                 if Agent.is_user_prompt_node(node):
+                    logger.debug("Processing user prompt node")
                     pass
                 
                 # Handle model request node - stream the response
@@ -187,6 +201,7 @@ async def stream_agent_response(
                 
                 # Handle tool calls
                 elif Agent.is_call_tools_node(node):
+                    logger.info("Processing tool call node")
                     tool_call_info = {
                         "tool_name": "Unknown",
                         "args": {},
@@ -195,10 +210,13 @@ async def stream_agent_response(
                     
                     async with node.stream(run.ctx) as tool_stream:
                         tool_result_text = ""
+                        tool_call_started = False
                         async for event in tool_stream:
                             event_type = type(event).__name__
+                            logger.debug(f"Tool stream event: {event_type}")
                             
                             if event_type == "FunctionToolCallEvent":
+                                tool_call_started = True
                                 if hasattr(event, 'part'):
                                     part = event.part
                                     
@@ -213,35 +231,62 @@ async def stream_agent_response(
                                         tool_call_info["args"] = part.args
                                     elif hasattr(part, 'arguments'):
                                         tool_call_info["args"] = part.arguments
+                                
+                                logger.info(f"Tool call started: {tool_call_info['tool_name']} with args: {tool_call_info.get('args', {})}")
                             
                             elif event_type == "FunctionToolResultEvent":
                                 tool_call_info["status"] = "completed"
+                                logger.info(f"Tool call completed: {tool_call_info['tool_name']}")
                                 if hasattr(event, 'result'):
                                     tool_result_text = str(event.result)
                                     
                                     # Extract citation tracker IDs
                                     tracker_ids = extract_citation_tracker_ids(tool_result_text)
+                                    logger.debug(f"Found {len(tracker_ids)} citation tracker IDs")
                                     for tracker_id in tracker_ids:
                                         citations = get_citation_metadata(tracker_id)
                                         all_citations.extend(citations)
                                         clear_citation_metadata(tracker_id)
+                        
+                        # Wait for stream to fully complete before marking as done
+                        # If tool call started but never completed, mark as completed anyway
+                        # (stream might have ended without explicit completion event)
+                        if tool_call_started and tool_call_info["status"] == "calling":
+                            logger.warning(f"Tool call {tool_call_info['tool_name']} started but no completion event received, marking as completed")
+                            tool_call_info["status"] = "completed"
                     
-                    tool_calls.append(tool_call_info)
+                    # Only append tool call if we actually got a tool call event
+                    # This prevents adding empty "Unknown" tool calls
+                    if tool_call_started or tool_call_info["tool_name"] != "Unknown":
+                        tool_calls.append(tool_call_info)
+                        logger.info(f"Added tool call to list: {tool_call_info['tool_name']} - {tool_call_info['status']}")
+                    else:
+                        logger.debug(f"Skipping tool call node with no actual tool call event")
                 
                 # Handle end node
                 elif Agent.is_end_node(node):
+                    logger.debug("Processing end node")
                     pass
         
         # Get new messages from this run
         new_messages = run.result.new_messages()
+        logger.info(f"Agent run completed. Response length: {len(response_text)}, Tool calls: {len(tool_calls)}, Citations: {len(all_citations)}")
         
         # Get final output
         final_output = run.result.output if hasattr(run.result, 'output') else str(run.result)
         response = response_text.strip() or final_output
         
+        # Ensure all tool calls are marked as completed
+        for tool_call in tool_calls:
+            if tool_call.get("status") == "calling":
+                logger.warning(f"Tool call {tool_call.get('tool_name')} still marked as calling, marking as completed")
+                tool_call["status"] = "completed"
+        
+        logger.info(f"Returning response with {len(tool_calls)} tool calls, all marked as completed")
         return (response, new_messages, all_citations, tool_calls)
     
     except Exception as e:
+        logger.error(f"Error in stream_agent_response: {e}", exc_info=True)
         st.error(f"Error: {e}")
         import traceback
         st.exception(e)
@@ -382,15 +427,74 @@ def main():
                 # Display tool calls if any
                 if tool_calls:
                     with tool_calls_placeholder:
-                        for tool_call in tool_calls:
-                            with st.expander(f"🔧 Tool: {tool_call['tool_name']}", expanded=False):
+                        st.subheader("🔧 Tool Execution Steps")
+                        for i, tool_call in enumerate(tool_calls, 1):
+                            tool_name = tool_call.get('tool_name', 'Unknown')
+                            args = tool_call.get('args', {})
+                            
+                            # Determine icon and title based on tool type
+                            if tool_name == "decompose_question":
+                                icon = "🔍"
+                                title = f"Step {i}: Question Decomposition"
+                            elif tool_name == "multi_search_knowledge_base":
+                                icon = "🔎"
+                                title = f"Step {i}: Multi-Search"
+                            elif tool_name == "refine_search":
+                                icon = "♻️"
+                                title = f"Step {i}: Search Refinement"
+                            elif tool_name == "search_knowledge_base":
+                                icon = "🔎"
+                                title = f"Step {i}: Knowledge Base Search"
+                            else:
+                                icon = "🔧"
+                                title = f"Step {i}: {tool_name}"
+                            
+                            with st.expander(f"{icon} {title}", expanded=(i == 1)):
                                 if tool_call['status'] == 'completed':
                                     st.success("✓ Completed")
                                 else:
                                     st.info("⏳ Processing...")
                                 
-                                if tool_call['args']:
-                                    st.json(tool_call['args'])
+                                # Display tool-specific information
+                                if args and isinstance(args, dict):
+                                    if tool_name == "decompose_question" and 'question' in args:
+                                        st.write("**Question:**", args['question'])
+                                    
+                                    elif tool_name == "multi_search_knowledge_base":
+                                        if 'queries' in args and isinstance(args['queries'], list):
+                                            st.write(f"**Sub-queries ({len(args['queries'])}):**")
+                                            for j, q in enumerate(args['queries'], 1):
+                                                st.write(f"{j}. {q}")
+                                        if 'match_count_per_query' in args:
+                                            st.write(f"**Results per query:** {args['match_count_per_query']}")
+                                        if 'search_type' in args:
+                                            st.write(f"**Search type:** {args['search_type']}")
+                                    
+                                    elif tool_name == "refine_search":
+                                        if 'original_query' in args:
+                                            st.write("**Original query:**", args['original_query'])
+                                        if 'refinement_goal' in args:
+                                            st.write("**Refinement goal:**", args['refinement_goal'])
+                                        if 'previous_results_summary' in args:
+                                            summary = str(args['previous_results_summary'])
+                                            if len(summary) > 200:
+                                                summary = summary[:197] + "..."
+                                            st.write("**Previous results:**", summary)
+                                    
+                                    elif tool_name == "search_knowledge_base":
+                                        if 'query' in args:
+                                            st.write("**Query:**", args['query'])
+                                        if 'search_type' in args:
+                                            st.write("**Search type:**", args['search_type'])
+                                        if 'match_count' in args:
+                                            st.write("**Results requested:**", args['match_count'])
+                                    
+                                    # Show full args as JSON for debugging
+                                    with st.expander("📋 Full Arguments", expanded=False):
+                                        st.json(args)
+                                elif args:
+                                    # If args is not a dict, just display it as-is
+                                    st.write("**Arguments:**", str(args))
                 
                 # Display response text
                 response_placeholder.write(response_text)

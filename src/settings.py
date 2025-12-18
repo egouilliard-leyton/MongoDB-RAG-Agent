@@ -93,6 +93,23 @@ class Settings(BaseSettings):
         default=False, description="Show full citations with source and path (True) or just title with link (False)"
     )
     
+    # Agentic RAG Configuration
+    enable_question_decomposition: bool = Field(
+        default=True, description="Enable automatic question decomposition into sub-questions"
+    )
+    
+    enable_iterative_refinement: bool = Field(
+        default=True, description="Enable iterative search refinement based on results"
+    )
+    
+    max_decomposition_depth: int = Field(
+        default=3, description="Maximum depth for question decomposition (prevent infinite loops)"
+    )
+    
+    max_search_iterations: int = Field(
+        default=3, description="Maximum number of search iterations for refinement"
+    )
+    
     @field_validator('show_full_citations', mode='before')
     @classmethod
     def parse_show_full_citations(cls, v):
