@@ -7,6 +7,7 @@ import os
 import sys
 from typing import List, Dict, Set, Optional
 from pathlib import Path
+from urllib.parse import quote
 
 # Add project root to Python path for Streamlit
 project_root = Path(__file__).parent.parent
@@ -73,7 +74,7 @@ def format_citations(
     citation_numbers: Set[int],
     show_full: bool,
     documents_folder: str = "documents"
-) -> List[str]:
+) -> List[Dict[str, str]]:
     """
     Format citations for display.
     
@@ -84,7 +85,7 @@ def format_citations(
         documents_folder: Path to documents folder
         
     Returns:
-        List of formatted citation strings
+        List of dictionaries with 'text' and 'view_url' keys
     """
     if not citations or not citation_numbers:
         return []
@@ -104,30 +105,21 @@ def format_citations(
         title = cit['title']
         source = cit['source']
         
-        # Resolve file path
-        if os.path.isabs(source):
-            file_path = source
-        else:
-            file_path = os.path.join(documents_folder, source)
-        
-        # Convert to absolute path and create file:// URL
-        abs_path = os.path.abspath(file_path)
-        if os.name == 'nt':  # Windows
-            abs_path_normalized = abs_path.replace('\\', '/')
-            if not abs_path_normalized.startswith('/'):
-                abs_path_normalized = '/' + abs_path_normalized
-            file_url = f"file://{abs_path_normalized}"
-        else:  # Unix/Mac
-            file_url = f"file://{abs_path}"
+        # Create Streamlit page URL for viewing document
+        # URL encode the source path
+        encoded_source = quote(source)
+        view_url = f"/view_document?file={encoded_source}"
         
         if show_full:
-            formatted.append(
-                f"[{citation_num}] {title} ({file_url}) - Source: {source}"
-            )
+            citation_text = f"[{citation_num}] {title} - Source: {source}"
         else:
-            formatted.append(
-                f"[{citation_num}] {title} ({file_url})"
-            )
+            citation_text = f"[{citation_num}] {title}"
+        
+        formatted.append({
+            'text': citation_text,
+            'view_url': view_url,
+            'source': source
+        })
     
     return formatted
 
@@ -422,19 +414,39 @@ def main():
                         with citations_placeholder:
                             st.markdown("---")
                             st.markdown("### 📚 Citations")
-                            for citation_line in formatted_citations:
-                                # Extract file URL from citation line
-                                file_url_match = re.search(r'file://[^\s)]+', citation_line)
-                                if file_url_match:
-                                    file_url = file_url_match.group(0)
-                                    # Create markdown link
-                                    citation_with_link = citation_line.replace(
-                                        file_url,
-                                        f"[Open Document]({file_url})"
-                                    )
-                                    st.markdown(citation_with_link)
-                                else:
-                                    st.markdown(citation_line)
+                            for citation_data in formatted_citations:
+                                citation_text = citation_data['text']
+                                view_url = citation_data['view_url']
+                                source_file = citation_data['source']
+                                
+                                # Use Streamlit's page navigation with session state for query params
+                                # Create a container with citation text and button
+                                col1, col2 = st.columns([3, 1])
+                                with col1:
+                                    st.markdown(citation_text)
+                                with col2:
+                                    # Store file in session state and navigate to viewer page
+                                    button_key = f"view_doc_{citation_data.get('citation_number', hash(source_file))}"
+                                    
+                                    if st.button("📄 View Document", key=button_key):
+                                        # Store file parameter in session state (persists across page navigation)
+                                        st.session_state['view_document_file'] = source_file
+                                        # Navigate to viewer page
+                                        # Try different page identifier formats
+                                        try:
+                                            # Try with pages/ prefix
+                                            st.switch_page("pages/view_document")
+                                        except Exception:
+                                            try:
+                                                # Try without prefix
+                                                st.switch_page("view_document")
+                                            except Exception:
+                                                # Last resort: use JavaScript to navigate
+                                                st.markdown(
+                                                    f'<script>window.location.href = "/view_document?file={quote(source_file)}";</script>',
+                                                    unsafe_allow_html=True
+                                                )
+                                                st.stop()
                 
                 # Add new messages to history
                 st.session_state.message_history.extend(new_messages)
