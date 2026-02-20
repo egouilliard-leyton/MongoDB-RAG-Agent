@@ -13,10 +13,12 @@ export const QuestionInput: React.FC = () => {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
-    // Auto-resize textarea
+    // Auto-resize textarea with max-height constraint
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
-      textareaRef.current.style.height = `${textareaRef.current.scrollHeight}px`;
+      const scrollHeight = textareaRef.current.scrollHeight;
+      const maxHeight = 300; // 300px max height
+      textareaRef.current.style.height = `${Math.min(scrollHeight, maxHeight)}px`;
     }
   }, [questionText]);
 
@@ -79,7 +81,8 @@ export const QuestionInput: React.FC = () => {
             setLocalError(null);
           }}
           placeholder="Enter your questions here (one per line or numbered list)...&#10;&#10;Example:&#10;1. What is the tax rate for corporations?&#10;2. How do I file quarterly returns?&#10;3. What deductions are available?"
-          rows={6}
+          rows={4}
+          maxHeight="300px"
           disabled={isProcessing || !currentSession}
           showCharCount
           className="font-mono text-sm"

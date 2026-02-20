@@ -1,0 +1,341 @@
+{
+  "branchName": "ralph/cr-mvp-completion",
+  "metadata": {
+    "source": "imported-cr",
+    "sourceFile": "changes/CR-MVP-COMPLETION.md",
+    "createdAt": "2026-01-26",
+    "priority": "P1-High",
+    "scope": "Large"
+  },
+  "tasks": [
+    {
+      "id": "T-001",
+      "description": "Investigate existing MongoDB schema and identify collections to create",
+      "acceptanceCriteria": [
+        "Documented current MongoDB collections and schemas",
+        "Identified which collections need to be created (tax_offices, regions, industries)",
+        "Verified no conflicts with existing collection names"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-002",
+      "description": "Create Pydantic models for TaxOffice, Region, and Industry",
+      "acceptanceCriteria": [
+        "TaxOffice model matches Excel schema with all 11 fields typed",
+        "Region model created with name field",
+        "Industry model created with Polish and English name fields",
+        "All models added to src/api/models.py with proper type annotations"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-003",
+      "description": "Create tax_office_storage.py service with CRUD operations",
+      "acceptanceCriteria": [
+        "File created at src/services/tax_office_storage.py",
+        "Implements async CRUD methods (insert, find_by_id, search, list)",
+        "Uses Motor async MongoDB client",
+        "All functions have type annotations and Google-style docstrings"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-004",
+      "description": "Create import script to load 590 tax offices from Excel",
+      "acceptanceCriteria": [
+        "Script created at scripts/import_tax_offices.py",
+        "Reads 'Data structure, Tax office cooperation 1.xlsx'",
+        "Maps all columns correctly to TaxOffice model",
+        "Successfully inserts 590 records into tax_offices collection",
+        "Creates indexes on kodjednostki, nazwa_urzedu, wojewodztwo"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-005",
+      "description": "Create seed script for industries and regions reference data",
+      "acceptanceCriteria": [
+        "Script created at scripts/seed_reference_data.py",
+        "Defines all 18 industries from CR specification",
+        "Defines all 16 voivodeships from CR specification",
+        "Successfully inserts data into industries and regions collections",
+        "Script is idempotent (can run multiple times safely)"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-006",
+      "description": "Implement tax office API routes with search functionality",
+      "acceptanceCriteria": [
+        "File created at src/api/routes/tax_offices.py",
+        "GET /api/tax-offices returns paginated list",
+        "GET /api/tax-offices/search?q= searches by name/city/kodjednostki",
+        "GET /api/tax-offices/{id} returns single office by kodjednostki",
+        "Router registered in main.py"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-007",
+      "description": "Implement regions and industries API routes",
+      "acceptanceCriteria": [
+        "src/api/routes/regions.py created with GET /api/regions endpoint",
+        "src/api/routes/industries.py created with GET /api/industries endpoint",
+        "Both routers registered in main.py",
+        "Endpoints return properly typed responses"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-008",
+      "description": "Extend Project and Session models with tax_office_id, region, and industry fields",
+      "acceptanceCriteria": [
+        "Project model has Optional[int] tax_office_id field",
+        "Project model has Optional[str] region field",
+        "Project model has Optional[str] industry field",
+        "Session model has Optional[int] tax_office_id field",
+        "Session model has Optional[str] region field",
+        "All fields are optional for backward compatibility"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-009",
+      "description": "Update project and session creation endpoints to accept new fields",
+      "acceptanceCriteria": [
+        "ProjectCreateRequest accepts tax_office_id, region, industry",
+        "SessionCreateRequest accepts tax_office_id, region",
+        "src/services/project_storage.py handles new fields",
+        "src/services/qa_storage.py handles new session fields",
+        "Existing projects/sessions without new fields still work"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-010",
+      "description": "Implement Gemini industry classification service",
+      "acceptanceCriteria": [
+        "File created at src/services/industry_classifier.py",
+        "GEMINI_API_KEY added to settings.py",
+        "Implements upload_to_gemini() function",
+        "Implements classify_industry() with 18-industry prompt",
+        "Implements delete_from_gemini() cleanup",
+        "Handles API errors gracefully with logging"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-011",
+      "description": "Integrate industry classification into ingestion pipeline",
+      "acceptanceCriteria": [
+        "src/ingestion/ingest.py imports industry_classifier",
+        "After document conversion, uploads to Gemini",
+        "Classifies industry and stores in document metadata",
+        "Deletes document from Gemini after classification",
+        "Ingestion continues if classification fails (not blocking)"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-012",
+      "description": "Add outcome_status field to QAPair model and implement outcome endpoint",
+      "acceptanceCriteria": [
+        "QAPair model has Optional[str] outcome_status field",
+        "Field validator ensures values are successful/partial/negative",
+        "PUT /api/qa-pairs/{id}/outcome endpoint created",
+        "qa_storage.py has set_outcome() method",
+        "Endpoint properly updates outcome in MongoDB"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-013",
+      "description": "Implement exemplar service with threshold-based auto-promotion",
+      "acceptanceCriteria": [
+        "File created at src/services/exemplar_service.py",
+        "check_exemplar_eligibility() implements threshold logic (confidence >= 0.8, citations >= 2, good rating, good verdict)",
+        "promote_to_exemplar() updates is_exemplar flag",
+        "QAPair model has is_exemplar: bool field",
+        "Auto-promotion triggers when QA pair rated good"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-014",
+      "description": "Extend search filtering to support industry, tax_office, and region filters",
+      "acceptanceCriteria": [
+        "search_knowledge_base() accepts industry: Optional[str] parameter",
+        "search_knowledge_base() accepts tax_office_id: Optional[int] parameter",
+        "search_knowledge_base() accepts region: Optional[str] parameter",
+        "MongoDB aggregation pipeline includes $match filters for new fields",
+        "Combined filtering works correctly (all three filters together)"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-015",
+      "description": "Create analytics service with aggregation methods",
+      "acceptanceCriteria": [
+        "File created at src/services/analytics_service.py",
+        "get_project_count() implemented",
+        "get_session_count() implemented",
+        "get_success_rate() implemented",
+        "get_distribution_by_region() implemented",
+        "get_distribution_by_industry() implemented",
+        "get_distribution_by_tax_office() implemented",
+        "get_qa_quality_metrics() implemented",
+        "All methods use MongoDB aggregation pipelines"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-016",
+      "description": "Implement dashboard API routes",
+      "acceptanceCriteria": [
+        "File created at src/api/routes/dashboard.py",
+        "GET /api/dashboard/summary returns overall statistics",
+        "GET /api/dashboard/distribution/region returns regional breakdown",
+        "GET /api/dashboard/distribution/industry returns industry breakdown",
+        "GET /api/dashboard/distribution/tax-office returns tax office breakdown",
+        "GET /api/dashboard/quality returns Q&A quality metrics",
+        "Router registered in main.py"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-017",
+      "description": "Create TaxOfficeSelector React component with search",
+      "acceptanceCriteria": [
+        "File created at frontend/src/components/TaxOfficeSelector.tsx",
+        "Implements debounced search input",
+        "Calls /api/tax-offices/search API",
+        "Displays search results in dropdown",
+        "Shows selected tax office details",
+        "Handles loading and error states"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-018",
+      "description": "Create RegionSelector and IndustrySelector React components",
+      "acceptanceCriteria": [
+        "frontend/src/components/RegionSelector.tsx created",
+        "RegionSelector fetches from /api/regions and displays dropdown",
+        "frontend/src/components/IndustrySelector.tsx created",
+        "IndustrySelector displays multi-select with checkboxes",
+        "IndustrySelector has 'Select All' functionality"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-019",
+      "description": "Integrate new selectors into ProjectCreator and SessionCreator",
+      "acceptanceCriteria": [
+        "ProjectCreator imports and uses TaxOfficeSelector, RegionSelector, IndustrySelector",
+        "SessionCreator imports and uses TaxOfficeSelector, RegionSelector",
+        "Form state updated to include new fields",
+        "API calls include new field values",
+        "UI layout is clean and responsive"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-020",
+      "description": "Create Dashboard page with summary metrics",
+      "acceptanceCriteria": [
+        "File created at frontend/src/pages/Dashboard.tsx",
+        "DashboardContext created at frontend/src/contexts/DashboardContext.tsx",
+        "/dashboard route added to App.tsx",
+        "Dashboard displays project count, session count, success rate",
+        "Layout includes summary cards"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-021",
+      "description": "Create dashboard chart components for data visualization",
+      "acceptanceCriteria": [
+        "Chart library installed (recharts or chart.js)",
+        "File created at frontend/src/components/DashboardCharts.tsx",
+        "RegionDistributionChart component created",
+        "IndustryDistributionChart component created",
+        "QualityMetricsChart component created",
+        "All charts fetch and display data correctly"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-022",
+      "description": "Write unit tests for new backend services",
+      "acceptanceCriteria": [
+        "test_scripts/test_tax_office_storage.py created and passing",
+        "test_scripts/test_industry_classifier.py created with mocked Gemini API",
+        "test_scripts/test_exemplar_service.py created with threshold tests",
+        "test_scripts/test_analytics_service.py created and passing",
+        "All tests follow existing test patterns"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-023",
+      "description": "Write integration tests for new API endpoints",
+      "acceptanceCriteria": [
+        "test_scripts/test_tax_office_api.py created and passing",
+        "test_scripts/test_dashboard_api.py created and passing",
+        "Search filtering integration test covers combined filters",
+        "Exemplar promotion flow tested end-to-end"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-024",
+      "description": "Perform manual testing of all new features",
+      "acceptanceCriteria": [
+        "Tax office search functionality works in UI",
+        "Region dropdown selection works correctly",
+        "Industry multi-select with 'Select All' works",
+        "Dashboard charts render without errors",
+        "Mobile responsiveness verified for new components",
+        "End-to-end flow: create project with all fields, upload doc, verify classification"
+      ],
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-025",
+      "description": "Update documentation for new features",
+      "acceptanceCriteria": [
+        "API documentation updated with new endpoints",
+        "README.md updated with feature descriptions",
+        "Configuration instructions added for GEMINI_API_KEY",
+        "Setup instructions updated for tax office import script"
+      ],
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

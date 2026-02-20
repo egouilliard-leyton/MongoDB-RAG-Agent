@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "excalidraw": {
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "--network", "host",
+        "-e", "EXPRESS_SERVER_URL=http://localhost:3000",
+        "-e", "ENABLE_CANVAS_SYNC=true",
+        "mcp-excalidraw"
+      ]
+    }
+  }
+}

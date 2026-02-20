@@ -9,6 +9,7 @@ interface QABlocksContextType {
   error: string | null;
   processQuestions: (questions: string[]) => Promise<void>;
   updateAnswer: (qaPairId: string, editedAnswer: string) => Promise<void>;
+  updateRating: (qaPairId: string, ratingGood: boolean | null) => Promise<void>;
   loadQAPairs: () => Promise<void>;
   clearError: () => void;
 }
@@ -28,7 +29,7 @@ interface QABlocksProviderProps {
 }
 
 export const QABlocksProvider: React.FC<QABlocksProviderProps> = ({ children }) => {
-  const { currentSession, userRole } = useSession();
+  const { currentSession, userRole, refreshCurrentSession } = useSession();
   const [qaPairs, setQAPairs] = useState<QAPair[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -84,6 +85,10 @@ export const QABlocksProvider: React.FC<QABlocksProviderProps> = ({ children }) 
         
         return updated;
       });
+
+      // The backend may update session-level metadata (e.g., review summary) during processing.
+      // Refresh the session so UI panels depending on metadata update immediately.
+      await refreshCurrentSession();
     } catch (err) {
       const duration = Date.now() - startTime;
       const message = err instanceof Error ? err.message : 'Failed to process questions';
@@ -105,7 +110,7 @@ export const QABlocksProvider: React.FC<QABlocksProviderProps> = ({ children }) 
         duration: `${duration}ms`,
       });
     }
-  }, [currentSession, userRole]);
+  }, [currentSession, userRole, refreshCurrentSession]);
 
   const updateAnswer = useCallback(async (qaPairId: string, editedAnswer: string) => {
     setIsProcessing(true);
@@ -115,12 +120,52 @@ export const QABlocksProvider: React.FC<QABlocksProviderProps> = ({ children }) 
       setQAPairs((prev) =>
         prev.map((pair) =>
           pair._id === qaPairId
-            ? { ...pair, edited_answer: editedAnswer, final_answer: editedAnswer }
+            ? {
+                ...pair,
+                edited_answer: editedAnswer,
+                final_answer: editedAnswer,
+                was_edited: true,
+                edited_at: new Date().toISOString(),
+              }
             : pair
         )
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to update answer';
+      setError(message);
+      throw err;
+    } finally {
+      setIsProcessing(false);
+    }
+  }, []);
+
+  const updateRating = useCallback(async (qaPairId: string, ratingGood: boolean | null) => {
+    setIsProcessing(true);
+    setError(null);
+
+    let previousRating: boolean | null | undefined;
+    setQAPairs((prev) =>
+      prev.map((pair) => {
+        if (pair._id !== qaPairId) return pair;
+        previousRating = pair.rating_good;
+        return {
+          ...pair,
+          rating_good: ratingGood,
+          rated_at: ratingGood === null ? null : new Date().toISOString(),
+        };
+      })
+    );
+
+    try {
+      await api.updateQAPairRating(qaPairId, { rating_good: ratingGood });
+    } catch (err) {
+      // revert optimistic update
+      setQAPairs((prev) =>
+        prev.map((pair) =>
+          pair._id === qaPairId ? { ...pair, rating_good: previousRating } : pair
+        )
+      );
+      const message = err instanceof Error ? err.message : 'Failed to update rating';
       setError(message);
       throw err;
     } finally {
@@ -156,6 +201,7 @@ export const QABlocksProvider: React.FC<QABlocksProviderProps> = ({ children }) 
     error,
     processQuestions,
     updateAnswer,
+    updateRating,
     loadQAPairs,
     clearError,
   };

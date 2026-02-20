@@ -7,6 +7,7 @@ from typing import Optional, List, Dict, Any
 from pydantic_ai import RunContext
 from pydantic import BaseModel, Field
 from pymongo.errors import OperationFailure
+from bson import ObjectId
 
 from src.dependencies import AgentDependencies
 from src.settings import load_settings
@@ -15,28 +16,43 @@ logger = logging.getLogger(__name__)
 
 
 def build_metadata_filter(
+    project_id: Optional[str] = None,
     document_type: Optional[str] = None,
     author: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     keywords: Optional[List[str]] = None,
-    section_type: Optional[str] = None
+    section_type: Optional[str] = None,
+    industry: Optional[str] = None,
+    tax_office_id: Optional[int] = None,
+    region: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Build MongoDB filter query from metadata parameters.
 
     Args:
+        project_id: Filter by project ID (ObjectId as string)
         document_type: Filter by document type (e.g., "KDIP2", "KDIB1-3")
         author: Filter by author
         date_from: Filter by document date (from, inclusive)
         date_to: Filter by document date (to, inclusive)
         keywords: Filter by keywords (any match)
         section_type: Filter by section type (e.g., "przepis", "zagadnienie")
+        industry: Filter by industry classification (e.g., "IT", "Construction")
+        tax_office_id: Filter by tax office ID (kodjednostki)
+        region: Filter by region/voivodeship (e.g., "mazowieckie", "śląskie")
 
     Returns:
         MongoDB filter dictionary
     """
     filter_query = {}
+
+    if project_id:
+        try:
+            filter_query["metadata.project_id"] = ObjectId(project_id)
+        except Exception:
+            # If invalid id, filter to impossible value to avoid leakage across projects
+            filter_query["metadata.project_id"] = ObjectId()
 
     if document_type:
         filter_query["metadata.document_type"] = document_type
@@ -59,6 +75,15 @@ def build_metadata_filter(
     if section_type:
         filter_query["metadata.section_type"] = section_type
 
+    if industry:
+        filter_query["metadata.industry"] = industry
+
+    if tax_office_id is not None:
+        filter_query["metadata.tax_office_id"] = tax_office_id
+
+    if region:
+        filter_query["metadata.region"] = region
+
     return filter_query
 
 
@@ -74,16 +99,55 @@ class SearchResult(BaseModel):
     document_source: str = Field(..., description="Source from document lookup")
 
 
+def _truncate_for_log(value: Any, max_len: int = 120) -> str:
+    """Best-effort string truncation for safe, compact logs."""
+    try:
+        s = str(value)
+    except Exception:
+        s = "<unprintable>"
+    if len(s) <= max_len:
+        return s
+    return s[: max_len - 1] + "…"
+
+
+def _summarize_search_results_for_log(
+    results: List[SearchResult],
+    max_items: int = 3,
+) -> List[Dict[str, Any]]:
+    """
+    Build a compact, copy-friendly summary of search results for INFO logs.
+
+    Goal: allow quick verification of which MongoDB docs were retrieved without
+    dumping full chunk content into logs.
+    """
+    summary: List[Dict[str, Any]] = []
+    for r in (results or [])[: max(0, max_items)]:
+        summary.append(
+            {
+                "document_id": _truncate_for_log(r.document_id, 48),
+                "chunk_id": _truncate_for_log(r.chunk_id, 48),
+                "title": _truncate_for_log(r.document_title, 120),
+                "source": _truncate_for_log(r.document_source, 120),
+                "similarity": round(float(r.similarity), 4) if r.similarity is not None else None,
+            }
+        )
+    return summary
+
+
 async def semantic_search(
     ctx: RunContext[AgentDependencies],
     query: str,
     match_count: Optional[int] = None,
+    project_id: Optional[str] = None,
     document_type: Optional[str] = None,
     author: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     keywords: Optional[List[str]] = None,
-    section_type: Optional[str] = None
+    section_type: Optional[str] = None,
+    industry: Optional[str] = None,
+    tax_office_id: Optional[int] = None,
+    region: Optional[str] = None
 ) -> List[SearchResult]:
     """
     Perform pure semantic search using MongoDB vector similarity with optional metadata filtering.
@@ -92,12 +156,16 @@ async def semantic_search(
         ctx: Agent runtime context with dependencies
         query: Search query text
         match_count: Number of results to return (default: 10)
+        project_id: Filter by project ID (ObjectId as string)
         document_type: Filter by document type (e.g., "KDIP2", "KDIB1-3")
         author: Filter by author
         date_from: Filter by document date (from, inclusive)
         date_to: Filter by document date (to, inclusive)
         keywords: Filter by keywords (any match)
         section_type: Filter by section type (e.g., "przepis", "zagadnienie")
+        industry: Filter by industry classification (e.g., "IT", "Construction")
+        tax_office_id: Filter by tax office ID (kodjednostki)
+        region: Filter by region/voivodeship (e.g., "mazowieckie", "śląskie")
 
     Returns:
         List of search results ordered by similarity
@@ -120,12 +188,16 @@ async def semantic_search(
 
         # Build metadata filter
         metadata_filter = build_metadata_filter(
+            project_id=project_id,
             document_type=document_type,
             author=author,
             date_from=date_from,
             date_to=date_to,
             keywords=keywords,
-            section_type=section_type
+            section_type=section_type,
+            industry=industry,
+            tax_office_id=tax_office_id,
+            region=region
         )
 
         # Build MongoDB aggregation pipeline
@@ -191,7 +263,14 @@ async def semantic_search(
         ]
 
         logger.info(
-            f"semantic_search_completed: query={query}, results={len(search_results)}, match_count={match_count}"
+            f"semantic_search_completed: query='{query[:100]}', results={len(search_results)}, match_count={match_count}",
+            extra={
+                "query": query[:200],
+                "result_count": len(search_results),
+                "match_count": match_count,
+                "project_id": project_id,
+                "top_results": _summarize_search_results_for_log(search_results, max_items=3),
+            },
         )
 
         return search_results
@@ -212,12 +291,16 @@ async def text_search(
     ctx: RunContext[AgentDependencies],
     query: str,
     match_count: Optional[int] = None,
+    project_id: Optional[str] = None,
     document_type: Optional[str] = None,
     author: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     keywords: Optional[List[str]] = None,
-    section_type: Optional[str] = None
+    section_type: Optional[str] = None,
+    industry: Optional[str] = None,
+    tax_office_id: Optional[int] = None,
+    region: Optional[str] = None
 ) -> List[SearchResult]:
     """
     Perform full-text search using MongoDB Atlas Search with optional metadata filtering.
@@ -229,12 +312,16 @@ async def text_search(
         ctx: Agent runtime context with dependencies
         query: Search query text
         match_count: Number of results to return (default: 10)
+        project_id: Filter by project ID (ObjectId as string)
         document_type: Filter by document type (e.g., "KDIP2", "KDIB1-3")
         author: Filter by author
         date_from: Filter by document date (from, inclusive)
         date_to: Filter by document date (to, inclusive)
         keywords: Filter by keywords (any match)
         section_type: Filter by section type (e.g., "przepis", "zagadnienie")
+        industry: Filter by industry classification (e.g., "IT", "Construction")
+        tax_office_id: Filter by tax office ID (kodjednostki)
+        region: Filter by region/voivodeship (e.g., "mazowieckie", "śląskie")
 
     Returns:
         List of search results ordered by text relevance
@@ -254,12 +341,16 @@ async def text_search(
 
         # Build metadata filter
         metadata_filter = build_metadata_filter(
+            project_id=project_id,
             document_type=document_type,
             author=author,
             date_from=date_from,
             date_to=date_to,
             keywords=keywords,
-            section_type=section_type
+            section_type=section_type,
+            industry=industry,
+            tax_office_id=tax_office_id,
+            region=region
         )
 
         # Build MongoDB Atlas Search aggregation pipeline
@@ -329,7 +420,14 @@ async def text_search(
         ]
 
         logger.info(
-            f"text_search_completed: query={query}, results={len(search_results)}, match_count={match_count}"
+            f"text_search_completed: query='{query[:100]}', results={len(search_results)}, match_count={match_count}",
+            extra={
+                "query": query[:200],
+                "result_count": len(search_results),
+                "match_count": match_count,
+                "project_id": project_id,
+                "top_results": _summarize_search_results_for_log(search_results, max_items=3),
+            },
         )
 
         return search_results
@@ -425,12 +523,16 @@ async def hybrid_search(
     query: str,
     match_count: Optional[int] = None,
     text_weight: Optional[float] = None,
+    project_id: Optional[str] = None,
     document_type: Optional[str] = None,
     author: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     keywords: Optional[List[str]] = None,
-    section_type: Optional[str] = None
+    section_type: Optional[str] = None,
+    industry: Optional[str] = None,
+    tax_office_id: Optional[int] = None,
+    region: Optional[str] = None
 ) -> List[SearchResult]:
     """
     Perform hybrid search combining semantic and keyword matching with optional metadata filtering.
@@ -443,12 +545,16 @@ async def hybrid_search(
         query: Search query text
         match_count: Number of results to return (default: 10)
         text_weight: Weight for text matching (0-1, not used with RRF)
+        project_id: Filter by project ID (ObjectId as string)
         document_type: Filter by document type (e.g., "KDIP2", "KDIB1-3")
         author: Filter by author
         date_from: Filter by document date (from, inclusive)
         date_to: Filter by document date (to, inclusive)
         keywords: Filter by keywords (any match)
         section_type: Filter by section type (e.g., "przepis", "zagadnienie")
+        industry: Filter by industry classification (e.g., "IT", "Construction")
+        tax_office_id: Filter by tax office ID (kodjednostki)
+        region: Filter by region/voivodeship (e.g., "mazowieckie", "śląskie")
 
     Returns:
         List of search results sorted by combined RRF score
@@ -479,13 +585,17 @@ async def hybrid_search(
                 'query': query[:200],
                 'match_count': match_count,
                 'fetch_count': fetch_count,
+                'project_id': project_id,
                 'filters': {
                     'document_type': document_type,
                     'author': author,
                     'date_from': date_from,
                     'date_to': date_to,
                     'keywords': keywords,
-                    'section_type': section_type
+                    'section_type': section_type,
+                    'industry': industry,
+                    'tax_office_id': tax_office_id,
+                    'region': region
                 }
             }
         )
@@ -496,21 +606,29 @@ async def hybrid_search(
         semantic_results, text_results = await asyncio.gather(
             semantic_search(
                 ctx, query, fetch_count,
+                project_id=project_id,
                 document_type=document_type,
                 author=author,
                 date_from=date_from,
                 date_to=date_to,
                 keywords=keywords,
-                section_type=section_type
+                section_type=section_type,
+                industry=industry,
+                tax_office_id=tax_office_id,
+                region=region
             ),
             text_search(
                 ctx, query, fetch_count,
+                project_id=project_id,
                 document_type=document_type,
                 author=author,
                 date_from=date_from,
                 date_to=date_to,
                 keywords=keywords,
-                section_type=section_type
+                section_type=section_type,
+                industry=industry,
+                tax_office_id=tax_office_id,
+                region=region
             ),
             return_exceptions=True  # Don't fail if one search errors
         )
@@ -599,9 +717,11 @@ async def hybrid_search(
                 'text_count': len(text_results),
                 'merged_count': len(merged_results),
                 'returned_count': len(final_results),
+                'project_id': project_id,
                 'total_time_ms': round(total_time * 1000, 2),
                 'rrf_time_ms': round(rrf_time * 1000, 2),
-                'top_similarities': [r.similarity for r in final_results[:3]] if final_results else []
+                'top_similarities': [r.similarity for r in final_results[:3]] if final_results else [],
+                'top_results': _summarize_search_results_for_log(final_results, max_items=3),
             }
         )
 
@@ -811,6 +931,7 @@ async def search_qa_history(
             return []
 
         # Generate embedding for query
+        embedding_start = time.time()
         query_embedding = await deps.get_embedding(query)
         embedding_time = time.time() - embedding_start
         logger.debug(
@@ -837,6 +958,10 @@ async def search_qa_history(
         qa_pair_filter = {}
         if "outcome_status" in filter_query:
             qa_pair_filter["outcome_status"] = filter_query["outcome_status"]
+
+        # Policy: only GOOD-rated Q&A pairs can be used as exemplars.
+        # This intentionally excludes rating_good missing/null/false.
+        qa_pair_filter["rating_good"] = True
         
         if qa_pair_filter:
             pipeline.append({"$match": qa_pair_filter})

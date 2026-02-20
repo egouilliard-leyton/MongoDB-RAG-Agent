@@ -58,7 +58,10 @@ class QAStorageService:
         self,
         name: str,
         user_role: str,
-        company_info: Optional[Dict[str, Any]] = None
+        company_info: Optional[Dict[str, Any]] = None,
+        project_id: Optional[str] = None,
+        tax_office_id: Optional[int] = None,
+        region: Optional[str] = None,
     ) -> str:
         """
         Create a new Q&A session.
@@ -67,17 +70,31 @@ class QAStorageService:
             name: Session name
             user_role: User role ("junior" or "senior")
             company_info: Optional company information dictionary
+            project_id: Optional project ID to scope the session
+            tax_office_id: Optional tax office ID (kodjednostki)
+            region: Optional region (voivodeship)
 
         Returns:
             Session ID as string
         """
         await self.initialize()
 
+        project_oid: Optional[ObjectId] = None
+        if project_id:
+            try:
+                project_oid = ObjectId(project_id)
+            except Exception:
+                # Keep it unset if invalid; API layer also validates.
+                project_oid = None
+
         session_doc = {
             "session_name": name,
             "user_role": user_role,
             "status": "active",
             "outcome_status": None,
+            "project_id": project_oid,
+            "tax_office_id": tax_office_id,
+            "region": region,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
             "metadata": {
@@ -116,6 +133,8 @@ class QAStorageService:
 
         # Convert ObjectId to string
         session["_id"] = str(session["_id"])
+        if session.get("project_id") is not None:
+            session["project_id"] = str(session["project_id"])
         return session
 
     async def list_sessions(self, limit: int = 100, skip: int = 0) -> List[Dict[str, Any]]:
@@ -138,6 +157,8 @@ class QAStorageService:
         sessions = []
         async for session in cursor:
             session["_id"] = str(session["_id"])
+            if session.get("project_id") is not None:
+                session["project_id"] = str(session["project_id"])
             sessions.append(session)
 
         return sessions
@@ -149,7 +170,8 @@ class QAStorageService:
         answer: str,
         citations: List[Dict[str, Any]],
         question_index: int,
-        user_role: str
+        user_role: str,
+        review: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
         Save a Q&A pair.
@@ -181,6 +203,15 @@ class QAStorageService:
             "original_answer": answer,
             "edited_answer": None,
             "final_answer": answer,
+            # Feedback / review
+            "rating_good": None,  # null = not reviewed
+            "rated_at": None,
+            "rated_by": None,
+            # Editing audit
+            "was_edited": False,
+            "edited_at": None,
+            # Review agent output (optional)
+            "review": review,
             "citations": citations,
             "question_embedding": question_embedding,
             "question_index": question_index,
@@ -217,12 +248,51 @@ class QAStorageService:
                 "$set": {
                     "edited_answer": edited_answer,
                     "final_answer": edited_answer,
+                    "was_edited": True,
+                    "edited_at": datetime.utcnow(),
                     "updated_at": datetime.utcnow()
                 }
             }
         )
 
         logger.info(f"Updated Q&A pair answer: {qa_pair_id}")
+
+    async def update_rating(
+        self,
+        qa_pair_id: str,
+        rating_good: Optional[bool],
+        rated_by: Optional[str] = None
+    ) -> None:
+        """
+        Update consultant rating for a Q&A pair.
+
+        Args:
+            qa_pair_id: Q&A pair ID
+            rating_good: true=good, false=bad, None=clear/unreviewed
+            rated_by: Optional identifier for who rated
+        """
+        await self.initialize()
+
+        now = datetime.utcnow()
+        set_doc: Dict[str, Any] = {
+            "rating_good": rating_good,
+            "updated_at": now,
+        }
+
+        if rating_good is None:
+            set_doc["rated_at"] = None
+            set_doc["rated_by"] = None
+        else:
+            set_doc["rated_at"] = now
+            if rated_by is not None:
+                set_doc["rated_by"] = rated_by
+
+        await self.db[self.settings.mongodb_collection_qa_pairs].update_one(
+            {"_id": ObjectId(qa_pair_id)},
+            {"$set": set_doc}
+        )
+
+        logger.info(f"Updated Q&A pair rating: {qa_pair_id} -> {rating_good}")
 
     async def get_session_qa_pairs(self, session_id: str) -> List[Dict[str, Any]]:
         """
@@ -323,8 +393,11 @@ class QAStorageService:
         parent_round = parent_session.get("metadata", {}).get("round_number", 1)
         new_round = parent_round + 1
 
-        # Get parent session name
+        # Get parent session name and inherited fields
         parent_name = parent_session.get("session_name", "Unknown")
+        project_id = parent_session.get("project_id")
+        tax_office_id = parent_session.get("tax_office_id")
+        region = parent_session.get("region")
 
         # Fetch previous Q&A pairs from parent session
         previous_qa_pairs = await self.get_session_qa_pairs(parent_session_id)
@@ -338,6 +411,9 @@ class QAStorageService:
             "user_role": user_role,
             "status": "active",
             "outcome_status": None,
+            "project_id": ObjectId(project_id) if project_id else None,
+            "tax_office_id": tax_office_id,
+            "region": region,
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow(),
             "metadata": {
@@ -352,23 +428,38 @@ class QAStorageService:
         result = await self.db[self.settings.mongodb_collection_qa_sessions].insert_one(session_doc)
         new_session_id = str(result.inserted_id)
 
-        # Mark parent session as unsuccessful
-        await self.db[self.settings.mongodb_collection_qa_sessions].update_one(
-            {"_id": ObjectId(parent_session_id)},
-            {
-                "$set": {
-                    "outcome_status": "unsuccessful",
-                    "updated_at": datetime.utcnow()
-                }
-            }
-        )
-
         logger.info(
             f"Created follow-up session: {new_session_id} "
             f"(parent: {parent_session_id}, round: {new_round})"
         )
 
         return new_session_id
+
+    async def update_review(self, qa_pair_id: str, review: Optional[Dict[str, Any]]) -> None:
+        """Persist review agent output for a Q&A pair."""
+        await self.initialize()
+        await self.db[self.settings.mongodb_collection_qa_pairs].update_one(
+            {"_id": ObjectId(qa_pair_id)},
+            {
+                "$set": {
+                    "review": review,
+                    "updated_at": datetime.utcnow(),
+                }
+            },
+        )
+
+    async def update_session_review_summary(self, session_id: str, review_summary: Dict[str, Any]) -> None:
+        """Persist session-level review summary under metadata.review_summary."""
+        await self.initialize()
+        await self.db[self.settings.mongodb_collection_qa_sessions].update_one(
+            {"_id": ObjectId(session_id)},
+            {
+                "$set": {
+                    "metadata.review_summary": review_summary,
+                    "updated_at": datetime.utcnow(),
+                }
+            },
+        )
 
     async def mark_session_outcome(
         self,
@@ -432,4 +523,32 @@ class QAStorageService:
         )
 
         return parent_qa_pairs
+
+    async def set_outcome(self, qa_pair_id: str, outcome_status: str) -> None:
+        """
+        Set the outcome status for a Q&A pair.
+
+        Args:
+            qa_pair_id: Q&A pair ID
+            outcome_status: Outcome status ('successful', 'partial', or 'negative')
+
+        Raises:
+            ValueError: If qa_pair_id is invalid or Q&A pair not found
+        """
+        await self.initialize()
+
+        result = await self.db[self.settings.mongodb_collection_qa_pairs].update_one(
+            {"_id": ObjectId(qa_pair_id)},
+            {
+                "$set": {
+                    "outcome_status": outcome_status,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+
+        if result.matched_count == 0:
+            raise ValueError(f"Q&A pair not found: {qa_pair_id}")
+
+        logger.info(f"Set Q&A pair outcome: {qa_pair_id} -> {outcome_status}")
 

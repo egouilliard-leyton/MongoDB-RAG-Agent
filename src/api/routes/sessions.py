@@ -30,6 +30,10 @@ async def create_session(request: SessionCreateRequest):
     await qa_storage.initialize()
 
     try:
+        # Validate project_id if provided
+        if request.project_id:
+            validate_object_id(request.project_id, "Project")
+
         # Extract company info if provided
         company_info = None
         if request.company_info:
@@ -56,7 +60,10 @@ async def create_session(request: SessionCreateRequest):
         session_id = await qa_storage.create_session(
             name=request.name,
             user_role=request.user_role,
-            company_info=company_info
+            company_info=company_info,
+            project_id=request.project_id,
+            tax_office_id=request.tax_office_id,
+            region=request.region,
         )
 
         session = await qa_storage.get_session(session_id)

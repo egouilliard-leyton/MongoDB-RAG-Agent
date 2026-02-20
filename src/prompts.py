@@ -162,7 +162,7 @@ with citations. Format responses clearly for each question.
 FOLLOW_UP_CONTEXT_PROMPT = """
 ## IMPORTANT: Follow-up Session Context (Round {round_number})
 
-This is a follow-up session building upon a previous round that did not fully address the user's needs.
+This is a follow-up session building upon a previous round. Use the prior Q&A as context and improve on it where needed.
 
 ### Previous Round Q&A Pairs
 
@@ -177,7 +177,7 @@ The following questions and answers from the previous round need improvement:
 - **Provide more comprehensive, accurate, or detailed answers** than before
 - **Consider different angles** or additional information sources that weren't explored previously
 - **If previous answers were partially correct**, build upon them rather than starting over completely
-- **Address any gaps** that made the previous round unsuccessful
+- **Address any gaps** that remained after the previous round
 - **Ensure your answer fully addresses** the user's question this time
 
 Use this context to inform your answer generation, but still search the knowledge base for current, accurate information.

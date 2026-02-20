@@ -21,6 +21,7 @@ dependencies = [
     "uvicorn>=0.32.0",
     "reportlab>=4.0.0",
     "python-docx>=1.1.0",
+    "google-generativeai>=0.8.0",
 ]
 
 [build-system]
@@ -33,4 +34,20 @@ dev-dependencies = [
     "pytest-asyncio>=0.24.0",
     "black>=24.10.0",
     "ruff>=0.8.0",
+    "mypy>=1.0.0",
+    "robotframework>=7.0.0",
+    "robotframework-browser>=18.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "--ignore=.env --ignore=.venv --ignore=.env.example --ignore=.git"
+norecursedirs = [".env", ".venv", ".git", ".env.*", "node_modules"]
+markers = [
+    "unit: Unit tests",
+    "integration: Integration tests",
+    "asyncio: Async tests",
 ]

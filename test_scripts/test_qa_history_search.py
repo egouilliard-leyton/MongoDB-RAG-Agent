@@ -78,12 +78,12 @@ async def test_qa_history_search():
         qa_pairs1 = await qa_storage.get_session_qa_pairs(session1_id)
         logger.info(f"Q&A pairs in session 1: {len(qa_pairs1)}")
         
-        # Mark Q&A pairs as successful
+        # Mark Q&A pairs as successful + good-rated (required for exemplar usage)
         for qa_pair in qa_pairs1:
             qa_pair_id = qa_pair.get("_id")
             await qa_storage.db[settings.mongodb_collection_qa_pairs].update_one(
                 {"_id": qa_pair["_id"]},
-                {"$set": {"outcome_status": "successful"}}
+                {"$set": {"outcome_status": "successful", "rating_good": True}}
             )
             logger.info(f"Marked Q&A pair {qa_pair_id} as successful")
         

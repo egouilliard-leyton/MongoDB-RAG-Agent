@@ -3,7 +3,11 @@
 import os
 from pathlib import Path
 from typing import Dict, List, Any
-from docling.document_converter import DocumentConverter
+
+try:
+    from docling.document_converter import DocumentConverter  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    DocumentConverter = None  # type: ignore
 
 
 def load_sample_markdown(pdf_path: str, max_lines: int = None) -> str:
@@ -19,6 +23,12 @@ def load_sample_markdown(pdf_path: str, max_lines: int = None) -> str:
     """
     if not os.path.exists(pdf_path):
         raise FileNotFoundError(f"PDF file not found: {pdf_path}")
+
+    if DocumentConverter is None:
+        raise ImportError(
+            "docling is not installed; cannot convert PDF to markdown in tests. "
+            "Install docling to enable real PDF extraction tests."
+        )
     
     converter = DocumentConverter()
     result = converter.convert(pdf_path)

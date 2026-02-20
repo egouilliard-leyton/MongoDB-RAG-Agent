@@ -99,8 +99,8 @@ export const FollowUpSessionCreator: React.FC<FollowUpSessionCreatorProps> = ({
           </div>
 
           <p className="text-sm text-gray-600 mb-4">
-            Enter new questions for the follow-up session. The previous session will be marked as unsuccessful,
-            and this new session will build upon it with improved answers.
+            Enter new questions for the follow-up session. This new session will build upon the previous round
+            with improved answers (it does not automatically change the previous session's outcome).
           </p>
 
           <form onSubmit={handleSubmit} className="space-y-4">

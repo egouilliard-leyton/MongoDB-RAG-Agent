@@ -1,0 +1,217 @@
+{
+  "branchName": "ralph/cr-chat-20260126-163114",
+  "description": "Add a 'stats' CLI command that displays MongoDB database statistics (document count, chunk count, collection names) to help with debugging and monitoring. This is a small, additive change that adds a new command handler in the CLI's main loop.",
+  "project": "MongoDB RAG Agent - Stats Command",
+  "version": "1",
+  "metadata": {
+    "source": "imported-cr",
+    "sourceFile": "changes/CR-chat-20260126-163114.md",
+    "priority": "P3-Low",
+    "scope": "Small",
+    "createdDate": "2026-01-26"
+  },
+  "tasks": [
+    {
+      "id": "T-001",
+      "title": "Review existing CLI command structure",
+      "description": "Examine src/cli.py lines 410-426 to understand how the 'info' and 'clear' commands are implemented, including their formatting, error handling, and control flow patterns",
+      "acceptanceCriteria": [
+        "Location of command handler block identified (around line 422)",
+        "Rich Panel formatting pattern from 'info' command documented",
+        "Error handling approach in existing commands understood",
+        "Continue statement usage pattern verified"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-002",
+      "title": "Review AgentDependencies initialization pattern",
+      "description": "Study src/dependencies.py to understand the AgentDependencies class lifecycle, including initialize() and cleanup() methods for proper connection management",
+      "acceptanceCriteria": [
+        "AgentDependencies.initialize() method signature verified",
+        "AgentDependencies.cleanup() method signature verified",
+        "Database connection access pattern (agent_deps.db) documented",
+        "Proper async/await usage pattern confirmed"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-003",
+      "title": "Verify MongoDB Motor count_documents() API",
+      "description": "Confirm the Motor async API for count_documents({}) and verify it returns accurate counts (not estimates) for both collections",
+      "acceptanceCriteria": [
+        "Motor count_documents({}) method syntax verified as async",
+        "Difference between count_documents and estimated_document_count understood",
+        "Return type confirmed to be integer",
+        "Collection access pattern via db[collection_name] verified"
+      ],
+      "priority": 1,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-004",
+      "title": "Add stats command handler block",
+      "description": "Insert new elif block for 'stats' command in src/cli.py after the 'info' command handler (around line 422), following the existing command structure pattern",
+      "acceptanceCriteria": [
+        "New elif block added with condition: user_input.lower() == 'stats'",
+        "Block positioned after 'info' command and before 'clear' command",
+        "Code properly indented to match surrounding blocks",
+        "Continue statement added at end of block"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-005",
+      "title": "Implement AgentDependencies initialization",
+      "description": "Add code to load settings and initialize AgentDependencies instance within the stats command handler, wrapped in try/finally for proper cleanup",
+      "acceptanceCriteria": [
+        "settings = load_settings() called",
+        "agent_deps = AgentDependencies() instantiated",
+        "await agent_deps.initialize() called inside try block",
+        "await agent_deps.cleanup() called in finally block"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-006",
+      "title": "Implement document and chunk count queries",
+      "description": "Add async MongoDB queries to count documents in both collections using count_documents({}) method",
+      "acceptanceCriteria": [
+        "doc_count query uses agent_deps.db[settings.mongodb_collection_documents].count_documents({})",
+        "chunk_count query uses agent_deps.db[settings.mongodb_collection_chunks].count_documents({})",
+        "Both queries use await keyword",
+        "Queries placed inside try block after initialize()"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-007",
+      "title": "Format output using Rich Panel",
+      "description": "Create Rich Panel output displaying database statistics with cyan styling and thousand separators, matching the style of the 'info' command",
+      "acceptanceCriteria": [
+        "Panel includes database name from settings.mongodb_database",
+        "Panel includes document count with :, format specifier",
+        "Panel includes chunk count with :, format specifier",
+        "Panel includes both collection names",
+        "Panel uses title='Database Statistics' and border_style='cyan'",
+        "Field labels use [cyan] color tags"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-008",
+      "title": "Add error handling for MongoDB failures",
+      "description": "Implement exception handling to catch and display user-friendly error messages when MongoDB connection or query fails",
+      "acceptanceCriteria": [
+        "Generic Exception catch block added in except clause",
+        "Error message displayed using console.print with [red] styling",
+        "Error message format: 'Error fetching stats: {e}'",
+        "Try/except/finally structure properly nested"
+      ],
+      "priority": 2,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-009",
+      "title": "Test with empty database",
+      "description": "Manually test the stats command against an empty MongoDB database to verify it displays 0 for all counts",
+      "acceptanceCriteria": [
+        "Command executes without errors on empty database",
+        "Document count displays as 0",
+        "Chunk count displays as 0",
+        "Panel renders correctly with zero values",
+        "No connection leaks observed (command can run multiple times)"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-010",
+      "title": "Test with populated database",
+      "description": "Manually test the stats command against a populated MongoDB database to verify accurate counts and proper formatting",
+      "acceptanceCriteria": [
+        "Document count matches actual count in MongoDB",
+        "Chunk count matches actual count in MongoDB",
+        "Large numbers display with thousand separators (e.g., 1,234)",
+        "Collection names display correctly",
+        "Database name displays correctly"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-011",
+      "title": "Test error handling with unavailable MongoDB",
+      "description": "Test the stats command when MongoDB is unreachable to verify graceful error handling and user-friendly messages",
+      "acceptanceCriteria": [
+        "Error message displays in red when MongoDB unavailable",
+        "CLI remains functional after error (doesn't crash)",
+        "Error message is user-friendly (not raw stack trace)",
+        "Cleanup executes even when error occurs"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-012",
+      "title": "Test command doesn't interfere with conversation",
+      "description": "Verify that running the stats command doesn't break the normal conversation flow and the CLI continues to function properly",
+      "acceptanceCriteria": [
+        "Can ask questions normally after running stats command",
+        "Message history preserved after stats command",
+        "No residual state pollution from stats command",
+        "Stats command can be run multiple times without issues"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-013",
+      "title": "Verify no connection leaks",
+      "description": "Monitor resource usage to ensure the stats command properly closes MongoDB connections and doesn't leak resources when run repeatedly",
+      "acceptanceCriteria": [
+        "Stats command can be run 10+ times consecutively without issues",
+        "No increasing memory usage pattern observed",
+        "MongoDB connection count remains stable",
+        "Cleanup method confirmed to execute in all code paths"
+      ],
+      "priority": 3,
+      "passes": false,
+      "notes": ""
+    },
+    {
+      "id": "T-014",
+      "title": "Code review and type safety verification",
+      "description": "Review the implementation to ensure it follows project conventions: type annotations, async/await patterns, error handling, and Rich formatting consistency",
+      "acceptanceCriteria": [
+        "All variables have appropriate type annotations if needed",
+        "Async/await used correctly throughout",
+        "Error handling follows project patterns from CLAUDE.md",
+        "Rich Panel formatting matches existing 'info' command style",
+        "Code follows KISS and YAGNI principles",
+        "No introduction of 'Any' types"
+      ],
+      "priority": 4,
+      "passes": false,
+      "notes": ""
+    }
+  ]
+}

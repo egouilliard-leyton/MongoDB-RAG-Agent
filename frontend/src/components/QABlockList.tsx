@@ -44,6 +44,22 @@ export const QABlockList: React.FC = () => {
 
   return (
     <div className="space-y-6">
+      {currentSession.metadata?.review_summary?.missing_info?.length ? (
+        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-sm font-medium text-yellow-900">
+                Review summary: what’s missing
+              </p>
+              <ul className="mt-2 text-sm text-yellow-800 list-disc pl-5 space-y-1">
+                {currentSession.metadata.review_summary.missing_info.slice(0, 8).map((item, idx) => (
+                  <li key={idx}>{item}</li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {qaPairs.map((qaPair) => (
         <QABlock key={qaPair._id} qaPair={qaPair} />
       ))}

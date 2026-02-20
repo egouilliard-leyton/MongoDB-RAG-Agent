@@ -12,14 +12,23 @@ interface QABlockProps {
 
 export const QABlock: React.FC<QABlockProps> = ({ qaPair }) => {
   const { userRole } = useSession();
-  const { updateAnswer } = useQABlocks();
+  const { updateAnswer, updateRating } = useQABlocks();
   const [isEditing, setIsEditing] = useState(false);
   const [editedAnswer, setEditedAnswer] = useState(qaPair.final_answer);
   const [isSaving, setIsSaving] = useState(false);
+  const [isRatingSaving, setIsRatingSaving] = useState(false);
+  const [showReview, setShowReview] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const saveTimeoutRef = useRef<NodeJS.Timeout>();
 
   const isSenior = userRole === 'senior';
+
+  const uniqueSourceDocCount = React.useMemo(() => {
+    const ids = new Set(
+      (qaPair.citations ?? []).map((c) => c?.document_id).filter(Boolean)
+    );
+    return ids.size;
+  }, [qaPair.citations]);
 
   useEffect(() => {
     setEditedAnswer(qaPair.final_answer);
@@ -37,7 +46,9 @@ export const QABlock: React.FC<QABlockProps> = ({ qaPair }) => {
 
     setIsSaving(true);
     try {
-      await updateAnswer(qaPair._id, editedAnswer);
+      const qaPairId = qaPair._id || qaPair.qa_pair_id;
+      if (!qaPairId) return;
+      await updateAnswer(qaPairId, editedAnswer);
       setIsEditing(false);
     } catch (err) {
       console.error('Failed to save answer:', err);
@@ -93,6 +104,51 @@ export const QABlock: React.FC<QABlockProps> = ({ qaPair }) => {
     );
   };
 
+  const getReviewBadge = () => {
+    if (!qaPair.review) return null;
+    const verdict = qaPair.review.verdict;
+    if (verdict === 'good') {
+      return (
+        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-800">
+          Review: good
+        </span>
+      );
+    }
+    if (verdict === 'risk') {
+      return (
+        <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-red-100 text-red-800">
+          Review: risk
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+        Review: needs info
+      </span>
+    );
+  };
+
+  const handleToggleRating = useCallback(
+    async (next: boolean) => {
+      if (!isSenior) return;
+      const qaPairId = qaPair._id || qaPair.qa_pair_id;
+      if (!qaPairId) return;
+
+      const current = qaPair.rating_good ?? null;
+      const nextValue = current === next ? null : next;
+
+      setIsRatingSaving(true);
+      try {
+        await updateRating(qaPairId, nextValue);
+      } catch (err) {
+        console.error('Failed to update rating:', err);
+      } finally {
+        setIsRatingSaving(false);
+      }
+    },
+    [isSenior, qaPair._id, qaPair.qa_pair_id, qaPair.rating_good, updateRating]
+  );
+
   return (
     <div className="bg-white rounded-lg shadow-md p-6 border border-gray-200 hover:shadow-lg transition-shadow">
       <div className="flex items-start justify-between mb-4">
@@ -102,11 +158,51 @@ export const QABlock: React.FC<QABlockProps> = ({ qaPair }) => {
               Question #{qaPair.question_index + 1}
             </span>
             {getOutcomeBadge()}
+            {getReviewBadge()}
+            {(qaPair.was_edited || false) && (
+              <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-800">
+                Edited
+              </span>
+            )}
           </div>
           <h3 className="text-lg font-semibold text-gray-900">
             {qaPair.question}
           </h3>
         </div>
+        {isSenior && (
+          <div className="ml-4 flex items-center space-x-2">
+            <button
+              type="button"
+              onClick={() => handleToggleRating(true)}
+              disabled={isRatingSaving}
+              className={[
+                "px-2 py-1 rounded-full text-xs font-medium border transition-colors",
+                (qaPair.rating_good ?? null) === true
+                  ? "bg-green-100 text-green-800 border-green-200"
+                  : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50",
+                isRatingSaving ? "opacity-60 cursor-not-allowed" : "",
+              ].join(" ")}
+              title="Mark as good (click again to clear)"
+            >
+              Good
+            </button>
+            <button
+              type="button"
+              onClick={() => handleToggleRating(false)}
+              disabled={isRatingSaving}
+              className={[
+                "px-2 py-1 rounded-full text-xs font-medium border transition-colors",
+                (qaPair.rating_good ?? null) === false
+                  ? "bg-red-100 text-red-800 border-red-200"
+                  : "bg-white text-gray-700 border-gray-200 hover:bg-gray-50",
+                isRatingSaving ? "opacity-60 cursor-not-allowed" : "",
+              ].join(" ")}
+              title="Mark as bad (click again to clear)"
+            >
+              Bad
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="mt-4">
@@ -162,6 +258,45 @@ export const QABlock: React.FC<QABlockProps> = ({ qaPair }) => {
         )}
       </div>
 
+      {qaPair.review && (
+        <div className="mt-4 border-t border-gray-200 pt-4">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-medium text-gray-700">Review</p>
+            <button
+              type="button"
+              className="text-sm text-blue-600 hover:text-blue-800 underline"
+              onClick={() => setShowReview((v) => !v)}
+            >
+              {showReview ? 'Hide' : 'Show'}
+            </button>
+          </div>
+          {showReview && (
+            <div className="mt-2 text-sm text-gray-700 space-y-2">
+              <p>{qaPair.review.summary}</p>
+              {qaPair.review.missing_info?.length ? (
+                <div>
+                  <p className="text-xs font-medium text-gray-600">Missing info to ask for:</p>
+                  <ul className="list-disc pl-5 mt-1 space-y-1">
+                    {qaPair.review.missing_info.slice(0, 8).map((mi, idx) => (
+                      <li key={idx}>{mi}</li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="mt-4">
+        {uniqueSourceDocCount === 0 ? (
+          <p className="text-xs text-gray-500">No sources found in knowledge base</p>
+        ) : (
+          <p className="text-xs text-gray-500">
+            Sources used: {uniqueSourceDocCount} document{uniqueSourceDocCount === 1 ? '' : 's'}
+          </p>
+        )}
+      </div>
       <CitationList citations={qaPair.citations} />
     </div>
   );

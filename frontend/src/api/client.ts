@@ -1,4 +1,5 @@
 import axios, { AxiosError } from 'axios';
+import { APIError } from './types';
 import type {
   QASession,
   QAPair,
@@ -6,9 +7,38 @@ import type {
   ProcessQuestionsRequest,
   ProcessQuestionsResponse,
   UpdateAnswerRequest,
+  UpdateQAPairRatingRequest,
   FollowUpSessionRequest,
-  APIError,
+  Project,
+  CreateProjectRequest,
+  UpdateProjectStageRequest,
   APIErrorResponse,
+  // Ingestion types
+  IngestionJob,
+  IngestionJobListResponse,
+  IngestionJobFilter,
+  IngestionStatsResponse,
+  IngestionProgress,
+  // Document types
+  Document,
+  DocumentListResponse,
+  DocumentUploadResponse,
+  DocumentFilter,
+  // System types
+  HealthCheckResponse,
+  IndexStatusResponse,
+  DocumentVerificationResult,
+  // Reference data types
+  TaxOffice,
+  Region,
+  Industry,
+  // Dashboard types
+  DashboardSummary,
+  RegionDistribution,
+  IndustryDistribution,
+  TaxOfficeDistribution,
+  TrendsResponse,
+  QualityMetricsResponse,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
@@ -19,6 +49,35 @@ const apiClient = axios.create({
     'Content-Type': 'application/json',
   },
 });
+
+// -----------------------------------------------------------------------------
+// Normalization helpers
+// -----------------------------------------------------------------------------
+// Some backend responses historically returned `qa_pair_id` while `_id` was null.
+// The UI (rating/edit) requires a stable `_id`, so we normalize here.
+const normalizeQAPair = (raw: any): QAPair => {
+  const hasStringId = (v: any): v is string => typeof v === 'string' && v.length > 0;
+  const normalizedId = hasStringId(raw?._id)
+    ? raw._id
+    : hasStringId(raw?.qa_pair_id)
+      ? raw.qa_pair_id
+      : null;
+
+  if (!normalizedId) {
+    console.warn('[api] QAPair missing id (`_id`/`qa_pair_id`)', raw);
+    return raw as QAPair;
+  }
+
+  return {
+    ...raw,
+    _id: normalizedId,
+  } as QAPair;
+};
+
+const normalizeQAPairs = (raw: any): QAPair[] => {
+  if (!Array.isArray(raw)) return raw as QAPair[];
+  return raw.map(normalizeQAPair);
+};
 
 // Request interceptor for logging
 apiClient.interceptors.request.use(
@@ -177,6 +236,70 @@ export const createSession = async (
   });
 };
 
+// Project endpoints
+export const listProjects = async (): Promise<Project[]> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<Project[]>('/api/projects');
+    return response.data;
+  });
+};
+
+export const createProject = async (data: CreateProjectRequest): Promise<Project> => {
+  return retryRequest(async () => {
+    const response = await apiClient.post<Project>('/api/projects', data);
+    return response.data;
+  });
+};
+
+export const getProject = async (projectId: string): Promise<Project> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<Project>(`/api/projects/${projectId}`);
+    return response.data;
+  });
+};
+
+export const getProjectStageOptions = async (
+  projectId: string
+): Promise<{
+  next_actions: Array<{ event: string; to: string; to_label: string }>;
+  rollback_targets: string[];
+}> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get(`/api/projects/${projectId}/stage-options`);
+    return response.data;
+  });
+};
+
+export const updateProjectStage = async (
+  projectId: string,
+  data: UpdateProjectStageRequest
+): Promise<Project> => {
+  return retryRequest(async () => {
+    const response = await apiClient.put<Project>(`/api/projects/${projectId}/stage`, data);
+    return response.data;
+  });
+};
+
+export const uploadProjectDocument = async (
+  projectId: string,
+  file: File
+): Promise<{
+  project_id: string;
+  document_id: string;
+  title: string;
+  chunks_created: number;
+  errors: string[];
+}> => {
+  return retryRequest(async () => {
+    const form = new FormData();
+    form.append('file', file);
+    const response = await apiClient.post(`/api/projects/${projectId}/uploads`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  });
+};
+
 export const getSession = async (sessionId: string): Promise<QASession> => {
   return retryRequest(async () => {
     const response = await apiClient.get<QASession>(`/api/sessions/${sessionId}`);
@@ -218,14 +341,19 @@ export const processQuestions = async (
       data
     );
     
+    const normalized: ProcessQuestionsResponse = {
+      ...response.data,
+      qa_pairs: normalizeQAPairs((response.data as any).qa_pairs),
+    };
+
     console.log('[processQuestions] Question processing completed', {
       sessionId,
-      questionsProcessed: response.questions_processed,
-      qaPairsCount: response.qa_pairs?.length || 0,
-      qaPairs: response.qa_pairs,
+      questionsProcessed: normalized.questions_processed,
+      qaPairsCount: normalized.qa_pairs?.length || 0,
+      qaPairs: normalized.qa_pairs,
     });
     
-    return response.data;
+    return normalized;
   });
 };
 
@@ -234,7 +362,7 @@ export const getQAPairs = async (sessionId: string): Promise<QAPair[]> => {
     const response = await apiClient.get<QAPair[]>(
       `/api/sessions/${sessionId}/qa-pairs`
     );
-    return response.data;
+    return normalizeQAPairs(response.data as any);
   });
 };
 
@@ -244,6 +372,15 @@ export const updateAnswer = async (
 ): Promise<void> => {
   return retryRequest(async () => {
     await apiClient.put(`/api/qa-pairs/${qaPairId}`, data);
+  });
+};
+
+export const updateQAPairRating = async (
+  qaPairId: string,
+  data: UpdateQAPairRatingRequest
+): Promise<void> => {
+  return retryRequest(async () => {
+    await apiClient.put(`/api/qa-pairs/${qaPairId}/rating`, data);
   });
 };
 
@@ -283,6 +420,469 @@ export const exportSession = async (
         responseType: 'blob',
       }
     );
+    return response.data;
+  });
+};
+
+// =============================================================================
+// Document Upload Endpoints
+// =============================================================================
+
+/**
+ * Upload a document without requiring a project context (standalone upload).
+ * The document will be ingested with full tracking and progress reporting.
+ *
+ * @param file - The file to upload
+ * @param projectId - Optional project ID to associate the document with
+ * @returns Upload response with document ID, job ID, statistics, and metadata
+ */
+export const uploadDocument = async (
+  file: File,
+  projectId?: string
+): Promise<DocumentUploadResponse> => {
+  return retryRequest(async () => {
+    const form = new FormData();
+    form.append('file', file);
+
+    const params = new URLSearchParams();
+    if (projectId) {
+      params.append('project_id', projectId);
+    }
+
+    const response = await apiClient.post<DocumentUploadResponse>(
+      `/api/documents/upload`,
+      form,
+      {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        params: projectId ? { project_id: projectId } : undefined,
+      }
+    );
+    return response.data;
+  });
+};
+
+/**
+ * Get a list of all documents with optional filtering and pagination.
+ *
+ * @param filters - Optional filters (project_id, search)
+ * @param limit - Maximum number of documents to return (default 50)
+ * @param skip - Number of documents to skip for pagination (default 0)
+ * @returns Paginated list of documents
+ */
+export const getDocuments = async (
+  filters?: DocumentFilter,
+  limit: number = 50,
+  skip: number = 0
+): Promise<DocumentListResponse> => {
+  return retryRequest(async () => {
+    const params: Record<string, string | number> = { limit, skip };
+
+    if (filters?.project_id) {
+      params.project_id = filters.project_id;
+    }
+    if (filters?.search) {
+      params.search = filters.search;
+    }
+
+    const response = await apiClient.get<DocumentListResponse>('/api/documents', { params });
+    return response.data;
+  });
+};
+
+/**
+ * Get a single document by ID.
+ *
+ * @param documentId - The document ID
+ * @returns Document details with metadata and chunk count
+ */
+export const getDocument = async (documentId: string): Promise<Document> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<Document>(`/api/documents/${documentId}`);
+    return response.data;
+  });
+};
+
+/**
+ * Delete a document and all its associated chunks.
+ *
+ * @param documentId - The document ID to delete
+ */
+export const deleteDocument = async (documentId: string): Promise<void> => {
+  return retryRequest(async () => {
+    await apiClient.delete(`/api/documents/${documentId}`);
+  });
+};
+
+// =============================================================================
+// Ingestion Job Endpoints
+// =============================================================================
+
+/**
+ * Get a list of ingestion jobs with optional filtering and pagination.
+ *
+ * @param filters - Optional filters (status, project_id, filename_contains, date range)
+ * @param limit - Maximum number of jobs to return (default 50)
+ * @param skip - Number of jobs to skip for pagination (default 0)
+ * @returns Paginated list of ingestion jobs
+ */
+export const getIngestionJobs = async (
+  filters?: IngestionJobFilter,
+  limit: number = 50,
+  skip: number = 0
+): Promise<IngestionJobListResponse> => {
+  return retryRequest(async () => {
+    const params: Record<string, string | number> = { limit, skip };
+
+    if (filters?.status) {
+      params.status = filters.status;
+    }
+    if (filters?.project_id) {
+      params.project_id = filters.project_id;
+    }
+    if (filters?.filename_contains) {
+      params.filename_contains = filters.filename_contains;
+    }
+    if (filters?.created_after) {
+      params.created_after = filters.created_after;
+    }
+    if (filters?.created_before) {
+      params.created_before = filters.created_before;
+    }
+
+    const response = await apiClient.get<IngestionJobListResponse>('/api/ingestion/jobs', {
+      params,
+    });
+    return response.data;
+  });
+};
+
+/**
+ * Get a single ingestion job by ID.
+ *
+ * @param jobId - The ingestion job ID
+ * @returns Full ingestion job details
+ */
+export const getIngestionJob = async (jobId: string): Promise<IngestionJob> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<IngestionJob>(`/api/ingestion/jobs/${jobId}`);
+    return response.data;
+  });
+};
+
+/**
+ * Subscribe to real-time ingestion status updates via Server-Sent Events (SSE).
+ * Returns a cleanup function to close the connection.
+ *
+ * @param jobId - The ingestion job ID to monitor
+ * @param onProgress - Callback for progress updates
+ * @param onComplete - Callback when job completes (success, partial, or failed)
+ * @param onError - Callback for SSE errors
+ * @returns Cleanup function to close the EventSource connection
+ */
+export const subscribeToIngestionStatus = (
+  jobId: string,
+  onProgress: (progress: IngestionProgress & { status: string }) => void,
+  onComplete?: (job: IngestionJob) => void,
+  onError?: (error: Event) => void
+): (() => void) => {
+  const url = `${API_BASE_URL}/api/ingestion/jobs/${jobId}/status`;
+  const eventSource = new EventSource(url);
+
+  eventSource.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      onProgress(data);
+
+      // Check if job has reached terminal state
+      if (data.status === 'success' || data.status === 'partial' || data.status === 'failed') {
+        eventSource.close();
+        if (onComplete) {
+          // Fetch full job details for complete callback
+          getIngestionJob(jobId)
+            .then(onComplete)
+            .catch((err) => {
+              console.error('[SSE] Failed to fetch completed job:', err);
+            });
+        }
+      }
+    } catch (err) {
+      console.error('[SSE] Failed to parse event data:', err);
+    }
+  };
+
+  eventSource.onerror = (error) => {
+    console.error('[SSE] EventSource error:', error);
+    eventSource.close();
+    if (onError) {
+      onError(error);
+    }
+  };
+
+  // Return cleanup function
+  return () => {
+    eventSource.close();
+  };
+};
+
+/**
+ * Get aggregate statistics for ingestion jobs.
+ *
+ * @param projectId - Optional project ID to filter stats
+ * @returns Aggregate statistics (total jobs, by status, chunks created, etc.)
+ */
+export const getIngestionStats = async (projectId?: string): Promise<IngestionStatsResponse> => {
+  return retryRequest(async () => {
+    const params = projectId ? { project_id: projectId } : undefined;
+    const response = await apiClient.get<IngestionStatsResponse>('/api/ingestion/stats', {
+      params,
+    });
+    return response.data;
+  });
+};
+
+/**
+ * Delete an ingestion job record (does not delete the document or chunks).
+ *
+ * @param jobId - The ingestion job ID to delete
+ */
+export const deleteIngestionJob = async (jobId: string): Promise<void> => {
+  return retryRequest(async () => {
+    await apiClient.delete(`/api/ingestion/jobs/${jobId}`);
+  });
+};
+
+// =============================================================================
+// System Health Endpoints
+// =============================================================================
+
+/**
+ * Check system health including database connectivity and collection status.
+ *
+ * @returns Health check response with database and collection status
+ */
+export const getSystemHealth = async (): Promise<HealthCheckResponse> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<HealthCheckResponse>('/api/system/health');
+    return response.data;
+  });
+};
+
+/**
+ * Get vector search index status and verification results.
+ *
+ * @returns Index status with configuration and verification results
+ */
+export const getIndexStatus = async (): Promise<IndexStatusResponse> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<IndexStatusResponse>('/api/system/index-status');
+    return response.data;
+  });
+};
+
+/**
+ * Verify that a specific document has been indexed and is searchable.
+ * Implements retry mechanism for eventual consistency.
+ *
+ * @param documentId - The document ID to verify
+ * @param maxRetries - Maximum retry attempts (default 3)
+ * @returns Document verification result
+ */
+export const verifyDocumentIndexed = async (
+  documentId: string,
+  maxRetries: number = 3
+): Promise<DocumentVerificationResult> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<DocumentVerificationResult>(
+      `/api/system/verify-document/${documentId}`,
+      {
+        params: { max_retries: maxRetries },
+      }
+    );
+    return response.data;
+  });
+};
+
+// =============================================================================
+// Tax Office Endpoints
+// =============================================================================
+
+/**
+ * Search tax offices by name, city, or kodjednostki ID.
+ *
+ * @param query - Search query string
+ * @param limit - Maximum number of results (default 20)
+ * @returns List of matching tax offices
+ */
+export const searchTaxOffices = async (
+  query: string,
+  limit: number = 20
+): Promise<TaxOffice[]> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<TaxOffice[]>('/api/tax-offices/search', {
+      params: { q: query, limit },
+    });
+    return response.data;
+  });
+};
+
+/**
+ * Get a tax office by its kodjednostki (unique ID).
+ *
+ * @param kodjednostki - Tax office unique identifier
+ * @returns Tax office record
+ */
+export const getTaxOffice = async (kodjednostki: number): Promise<TaxOffice> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<TaxOffice>(`/api/tax-offices/${kodjednostki}`);
+    return response.data;
+  });
+};
+
+/**
+ * List all tax offices with pagination.
+ *
+ * @param limit - Maximum number of results (default 100)
+ * @param skip - Number of results to skip for pagination (default 0)
+ * @returns List of tax offices
+ */
+export const listTaxOffices = async (
+  limit: number = 100,
+  skip: number = 0
+): Promise<TaxOffice[]> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<TaxOffice[]>('/api/tax-offices', {
+      params: { limit, skip },
+    });
+    return response.data;
+  });
+};
+
+/**
+ * Get total count of tax offices.
+ *
+ * @returns Object with count property
+ */
+export const getTaxOfficeCount = async (): Promise<{ count: number }> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<{ count: number }>('/api/tax-offices/count');
+    return response.data;
+  });
+};
+
+// =============================================================================
+// Region Endpoints
+// =============================================================================
+
+/**
+ * Get all regions (voivodeships).
+ *
+ * @returns List of regions
+ */
+export const getRegions = async (): Promise<Region[]> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<Region[]>('/api/regions');
+    return response.data;
+  });
+};
+
+// =============================================================================
+// Industry Endpoints
+// =============================================================================
+
+/**
+ * Get all industries.
+ *
+ * @returns List of industries
+ */
+export const getIndustries = async (): Promise<Industry[]> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<Industry[]>('/api/industries');
+    return response.data;
+  });
+};
+
+// =============================================================================
+// Dashboard Endpoints
+// =============================================================================
+
+/**
+ * Get dashboard summary statistics.
+ *
+ * @returns Dashboard summary with project count, session count, success rate, and Q&A quality metrics
+ */
+export const getDashboardSummary = async (): Promise<DashboardSummary> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<DashboardSummary>('/api/dashboard/summary');
+    return response.data;
+  });
+};
+
+/**
+ * Get project and session distribution by region.
+ *
+ * @returns Distribution data for projects and sessions by region
+ */
+export const getRegionDistribution = async (): Promise<RegionDistribution> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<RegionDistribution>('/api/dashboard/distribution/region');
+    return response.data;
+  });
+};
+
+/**
+ * Get project distribution by industry.
+ *
+ * @returns Distribution data for projects by industry
+ */
+export const getIndustryDistribution = async (): Promise<IndustryDistribution> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<IndustryDistribution>('/api/dashboard/distribution/industry');
+    return response.data;
+  });
+};
+
+/**
+ * Get project distribution by tax office.
+ *
+ * @param limit - Maximum number of tax offices to return (default: 20)
+ * @returns Distribution data for projects by tax office
+ */
+export const getTaxOfficeDistribution = async (limit: number = 20): Promise<TaxOfficeDistribution> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<TaxOfficeDistribution>('/api/dashboard/distribution/tax-office', {
+      params: { limit },
+    });
+    return response.data;
+  });
+};
+
+/**
+ * Get time-based trends for projects, sessions, and Q&A pairs.
+ *
+ * @param days - Number of days to look back (default: 30)
+ * @param granularity - Time grouping: day, week, or month (default: day)
+ * @returns Trend data with time series for each metric
+ */
+export const getDashboardTrends = async (
+  days: number = 30,
+  granularity: 'day' | 'week' | 'month' = 'day'
+): Promise<TrendsResponse> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<TrendsResponse>('/api/dashboard/trends', {
+      params: { days, granularity },
+    });
+    return response.data;
+  });
+};
+
+/**
+ * Get Q&A quality metrics including good/bad ratios.
+ *
+ * @returns Quality metrics and outcome distribution
+ */
+export const getQualityMetrics = async (): Promise<QualityMetricsResponse> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<QualityMetricsResponse>('/api/dashboard/quality');
     return response.data;
   });
 };

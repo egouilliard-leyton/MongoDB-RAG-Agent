@@ -10,7 +10,7 @@ import asyncio
 import logging
 import glob
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable, Awaitable, Protocol, runtime_checkable
 from datetime import datetime
 import argparse
 from dataclasses import dataclass
@@ -26,15 +26,53 @@ from src.ingestion.metadata_extractor import (
     extract_tax_interpretation_metadata,
     extract_structured_metadata,
     extract_title_enhanced,
-    extract_outcome_status
+    extract_outcome_status,
+    extract_interpretation_stance,
 )
 from src.ingestion.section_identifier import get_section_count
 from src.settings import load_settings
+from src.services.ingestion_tracker import (
+    IngestionStage,
+    IngestionStatistics,
+    IngestionProgress,
+    IngestionResult as TrackerIngestionResult,
+)
+from src.services.industry_classifier import get_industry_classifier, IndustryClassifier
 
 # Load environment variables
 load_dotenv()
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+# Progress Callback Protocol
+# =============================================================================
+
+
+@runtime_checkable
+class ProgressCallback(Protocol):
+    """Protocol for progress callbacks during ingestion."""
+
+    async def __call__(
+        self,
+        stage: IngestionStage,
+        progress_pct: int,
+        message: str
+    ) -> None:
+        """
+        Called when ingestion progress updates.
+
+        Args:
+            stage: Current ingestion stage
+            progress_pct: Progress percentage (0-100)
+            message: Human-readable status message
+        """
+        ...
+
+
+# Type alias for progress callback
+ProgressCallbackType = Callable[[IngestionStage, int, str], Awaitable[None]]
 
 
 @dataclass
@@ -44,16 +82,44 @@ class IngestionConfig:
     chunk_overlap: int = 200
     max_chunk_size: int = 2000
     max_tokens: int = 512
+    skip_classification: bool = False  # Skip Gemini industry classification
 
 
 @dataclass
 class IngestionResult:
-    """Result of document ingestion."""
+    """Result of document ingestion (legacy dataclass for CLI compatibility)."""
     document_id: str
     title: str
     chunks_created: int
     processing_time_ms: float
     errors: List[str]
+
+
+@dataclass
+class DetailedIngestionResult:
+    """
+    Detailed ingestion result with full statistics and metadata.
+
+    Used by the API for comprehensive ingestion tracking.
+    """
+    document_id: Optional[str]
+    title: str
+    status: str  # "success", "partial", "failed"
+    statistics: IngestionStatistics
+    metadata_extracted: Dict[str, Any]
+    warnings: List[str]
+    errors: List[str]
+
+    def to_tracker_result(self) -> TrackerIngestionResult:
+        """Convert to IngestionTracker's result model."""
+        return TrackerIngestionResult(
+            document_id=self.document_id,
+            status=self.status,
+            statistics=self.statistics,
+            metadata_extracted=self.metadata_extracted,
+            warnings=self.warnings,
+            errors=self.errors,
+        )
 
 
 class DocumentIngestionPipeline:
@@ -98,7 +164,53 @@ class DocumentIngestionPipeline:
         self.chunker = create_chunker(self.chunker_config)
         self.embedder = create_embedder()
 
+        # Initialize industry classifier (lazy - will be configured when needed)
+        self.skip_classification = config.skip_classification
+        self._industry_classifier: Optional[IndustryClassifier] = None
+
         self._initialized = False
+
+    async def ingest_file(
+        self,
+        file_path: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> IngestionResult:
+        """
+        Ingest a single file without scanning the full documents folder.
+
+        This is primarily used by the Projects uploads API.
+        """
+        if not self._initialized:
+            await self.initialize()
+        return await self._ingest_single_document(file_path, extra_metadata=extra_metadata)
+
+    async def ingest_file_with_tracking(
+        self,
+        file_path: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[ProgressCallbackType] = None,
+    ) -> DetailedIngestionResult:
+        """
+        Ingest a single file with detailed progress tracking.
+
+        This method emits progress updates at each stage and returns
+        comprehensive statistics for the ingestion dashboard.
+
+        Args:
+            file_path: Path to the file to ingest
+            extra_metadata: Optional additional metadata to attach
+            progress_callback: Optional async callback for progress updates
+
+        Returns:
+            DetailedIngestionResult with full statistics and metadata
+        """
+        if not self._initialized:
+            await self.initialize()
+        return await self._ingest_single_document_with_tracking(
+            file_path,
+            extra_metadata=extra_metadata,
+            progress_callback=progress_callback,
+        )
 
     async def initialize(self) -> None:
         """
@@ -421,7 +533,129 @@ class DocumentIngestionPipeline:
         except Exception as e:
             logger.warning(f"Failed to extract outcome status: {e}")
 
+        # Extract interpretation stance (positive/partial/negative)
+        try:
+            stance_data = extract_interpretation_stance(content)
+            if stance_data.get("stance"):
+                metadata["interpretation_stance"] = stance_data["stance"]
+            if stance_data.get("evidence"):
+                metadata["interpretation_stance_evidence"] = stance_data["evidence"][:5]
+            logger.debug(
+                "Extracted interpretation stance: "
+                f"{stance_data.get('stance')}"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to extract interpretation stance: {e}")
+
         return metadata
+
+    async def _classify_document_industry(
+        self,
+        file_path: str,
+        document_content: str,
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+    ) -> tuple[Optional[str], Optional[str]]:
+        """
+        Classify document industry using Gemini API with retry logic.
+
+        Handles rate limiting with exponential backoff.
+
+        Args:
+            file_path: Path to the original document file
+            document_content: Extracted document content (used if file upload fails)
+            max_retries: Maximum number of retry attempts
+            base_delay: Base delay in seconds for exponential backoff
+
+        Returns:
+            Tuple of (industry_code, industry_name_polish) if successful,
+            (None, None) otherwise
+        """
+        if self.skip_classification:
+            logger.info("Industry classification skipped (--skip-classification flag)")
+            return None, None
+
+        # Lazy-initialize the classifier
+        if self._industry_classifier is None:
+            self._industry_classifier = get_industry_classifier()
+
+        if not self._industry_classifier.is_available:
+            logger.warning(
+                "Industry classification unavailable: GEMINI_API_KEY not configured"
+            )
+            return None, None
+
+        last_exception: Optional[Exception] = None
+
+        for attempt in range(max_retries):
+            try:
+                logger.info(
+                    f"Classifying industry (attempt {attempt + 1}/{max_retries}): "
+                    f"{os.path.basename(file_path)}"
+                )
+
+                # Try to classify from file first (better for PDFs, etc.)
+                # If file path doesn't exist or fails, fall back to content
+                if os.path.exists(file_path):
+                    industry_code, industry_name = (
+                        await self._industry_classifier.classify_from_file(file_path)
+                    )
+                else:
+                    # Fall back to content-based classification
+                    industry_code, industry_name = (
+                        await self._industry_classifier.classify_from_content(
+                            document_content,
+                            display_name=os.path.basename(file_path),
+                        )
+                    )
+
+                if industry_code:
+                    logger.info(
+                        f"Industry classified successfully: {industry_code} - {industry_name}"
+                    )
+                else:
+                    logger.info("Industry could not be determined from document")
+
+                return industry_code, industry_name
+
+            except Exception as e:
+                last_exception = e
+                error_str = str(e).lower()
+
+                # Check for rate limiting errors
+                is_rate_limit = (
+                    "rate" in error_str
+                    or "quota" in error_str
+                    or "429" in error_str
+                    or "resource_exhausted" in error_str
+                )
+
+                if is_rate_limit and attempt < max_retries - 1:
+                    # Exponential backoff for rate limits
+                    delay = base_delay * (2 ** attempt)
+                    logger.warning(
+                        f"Gemini API rate limit hit, retrying in {delay:.1f}s "
+                        f"(attempt {attempt + 1}/{max_retries})"
+                    )
+                    await asyncio.sleep(delay)
+                elif attempt < max_retries - 1:
+                    # Shorter delay for other transient errors
+                    delay = base_delay
+                    logger.warning(
+                        f"Industry classification failed, retrying in {delay:.1f}s: {e}"
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    logger.exception(
+                        f"Industry classification failed after {max_retries} attempts: {e}"
+                    )
+
+        # All retries exhausted
+        logger.warning(
+            f"Industry classification failed for {os.path.basename(file_path)}: "
+            f"{last_exception}"
+        )
+        return None, None
 
     async def _save_to_mongodb(
         self,
@@ -477,16 +711,27 @@ class DocumentIngestionPipeline:
         # Prepare denormalized document metadata for chunks (for filtering)
         # Extract key fields that should be denormalized into chunks
         denormalized_doc_metadata = {}
+        if "project_id" in metadata and metadata["project_id"] is not None:
+            denormalized_doc_metadata["project_id"] = metadata["project_id"]
         if "document_type" in metadata:
             denormalized_doc_metadata["document_type"] = metadata["document_type"]
         if "document_date" in metadata:
             denormalized_doc_metadata["document_date"] = metadata["document_date"]
         if "id_informacji" in metadata:
             denormalized_doc_metadata["id_informacji"] = metadata["id_informacji"]
+        if "sygnatura" in metadata:
+            denormalized_doc_metadata["sygnatura"] = metadata["sygnatura"]
+        if "interpretation_stance" in metadata:
+            denormalized_doc_metadata["interpretation_stance"] = metadata["interpretation_stance"]
         if "slowa_kluczowe" in metadata:
             denormalized_doc_metadata["slowa_kluczowe"] = metadata["slowa_kluczowe"]
         if "author" in metadata:
             denormalized_doc_metadata["author"] = metadata["author"]
+        # Industry classification (for filtering)
+        if "industry_code" in metadata:
+            denormalized_doc_metadata["industry_code"] = metadata["industry_code"]
+        if "industry_name" in metadata:
+            denormalized_doc_metadata["industry_name"] = metadata["industry_name"]
 
         # Insert chunks with embeddings and enhanced metadata
         chunk_dicts = []
@@ -533,7 +778,11 @@ class DocumentIngestionPipeline:
         docs_result = await documents_collection.delete_many({})
         logger.info(f"Deleted {docs_result.deleted_count} documents")
 
-    async def _ingest_single_document(self, file_path: str) -> IngestionResult:
+    async def _ingest_single_document(
+        self,
+        file_path: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+    ) -> IngestionResult:
         """
         Ingest a single document.
 
@@ -554,6 +803,19 @@ class DocumentIngestionPipeline:
             document_content,
             file_path
         )
+
+        # Merge extra metadata (e.g., project scoping)
+        if extra_metadata:
+            document_metadata.update(extra_metadata)
+
+        # Classify document industry using Gemini (if not skipped)
+        industry_code, industry_name = await self._classify_document_industry(
+            file_path, document_content
+        )
+        if industry_code:
+            document_metadata["industry_code"] = industry_code
+            document_metadata["industry_name"] = industry_name
+            logger.info(f"Industry classified: {industry_code} - {industry_name}")
 
         # Extract title using enhanced extraction (can use metadata)
         document_title = self._extract_title(
@@ -613,6 +875,255 @@ class DocumentIngestionPipeline:
             chunks_created=len(chunks),
             processing_time_ms=processing_time,
             errors=[]
+        )
+
+    async def _ingest_single_document_with_tracking(
+        self,
+        file_path: str,
+        extra_metadata: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[ProgressCallbackType] = None,
+    ) -> DetailedIngestionResult:
+        """
+        Ingest a single document with detailed progress tracking.
+
+        Args:
+            file_path: Path to the document file
+            extra_metadata: Optional additional metadata
+            progress_callback: Optional async callback for progress updates
+
+        Returns:
+            DetailedIngestionResult with comprehensive statistics
+        """
+        start_time = datetime.now()
+        warnings: List[str] = []
+        errors: List[str] = []
+
+        # Helper to emit progress
+        async def emit_progress(stage: IngestionStage, pct: int, msg: str) -> None:
+            if progress_callback:
+                try:
+                    await progress_callback(stage, pct, msg)
+                except Exception as e:
+                    logger.warning(f"Progress callback failed: {e}")
+
+        # Get file size
+        try:
+            file_size_bytes = os.path.getsize(file_path)
+        except OSError:
+            file_size_bytes = 0
+
+        # Stage 1: Converting document
+        await emit_progress(IngestionStage.CONVERTING, 10, "Converting document to markdown...")
+
+        try:
+            document_content, docling_doc = self._read_document(file_path)
+            document_source = os.path.relpath(file_path, self.documents_folder)
+        except Exception as e:
+            logger.exception(f"Failed to convert document: {file_path}")
+            errors.append(f"Document conversion failed: {str(e)}")
+            return DetailedIngestionResult(
+                document_id=None,
+                title=os.path.basename(file_path),
+                status="failed",
+                statistics=IngestionStatistics(file_size_bytes=file_size_bytes),
+                metadata_extracted={},
+                warnings=warnings,
+                errors=errors,
+            )
+
+        await emit_progress(IngestionStage.CONVERTING, 20, "Document converted successfully")
+
+        # Stage 2: Extracting metadata
+        await emit_progress(IngestionStage.EXTRACTING_METADATA, 25, "Extracting document metadata...")
+
+        try:
+            document_metadata = self._extract_document_metadata(document_content, file_path)
+
+            # Merge extra metadata
+            if extra_metadata:
+                document_metadata.update(extra_metadata)
+
+            # Extract title
+            document_title = self._extract_title(
+                document_content, file_path, metadata=document_metadata
+            )
+        except Exception as e:
+            logger.warning(f"Metadata extraction partially failed: {e}")
+            warnings.append(f"Metadata extraction warning: {str(e)}")
+            document_metadata = extra_metadata or {}
+            document_title = os.path.basename(file_path)
+
+        await emit_progress(IngestionStage.EXTRACTING_METADATA, 30, f"Metadata extracted for: {document_title}")
+
+        # Stage 2b: Industry classification (optional - uses Gemini API)
+        if not self.skip_classification:
+            await emit_progress(IngestionStage.EXTRACTING_METADATA, 32, "Classifying document industry...")
+            try:
+                industry_code, industry_name = await self._classify_document_industry(
+                    file_path, document_content
+                )
+                if industry_code:
+                    document_metadata["industry_code"] = industry_code
+                    document_metadata["industry_name"] = industry_name
+                    logger.info(f"Industry classified: {industry_code} - {industry_name}")
+                    await emit_progress(
+                        IngestionStage.EXTRACTING_METADATA, 35,
+                        f"Industry: {industry_name}"
+                    )
+                else:
+                    await emit_progress(
+                        IngestionStage.EXTRACTING_METADATA, 35,
+                        "Industry could not be determined"
+                    )
+            except Exception as e:
+                # Industry classification is optional - don't fail the whole ingestion
+                warnings.append(f"Industry classification failed: {str(e)}")
+                logger.warning(f"Industry classification failed (continuing): {e}")
+                await emit_progress(
+                    IngestionStage.EXTRACTING_METADATA, 35,
+                    "Industry classification skipped due to error"
+                )
+        else:
+            await emit_progress(IngestionStage.EXTRACTING_METADATA, 35, "Industry classification skipped")
+
+        logger.info(f"Processing document with tracking: {document_title}")
+
+        # Stage 3: Chunking document
+        await emit_progress(IngestionStage.CHUNKING, 40, "Chunking document...")
+
+        try:
+            chunks = await self.chunker.chunk_document(
+                content=document_content,
+                title=document_title,
+                source=document_source,
+                metadata=document_metadata,
+                docling_doc=docling_doc,
+            )
+        except Exception as e:
+            logger.exception(f"Failed to chunk document: {document_title}")
+            errors.append(f"Chunking failed: {str(e)}")
+            return DetailedIngestionResult(
+                document_id=None,
+                title=document_title,
+                status="failed",
+                statistics=IngestionStatistics(file_size_bytes=file_size_bytes),
+                metadata_extracted=document_metadata,
+                warnings=warnings,
+                errors=errors,
+            )
+
+        if not chunks:
+            warnings.append("No chunks created from document")
+            return DetailedIngestionResult(
+                document_id=None,
+                title=document_title,
+                status="partial",
+                statistics=IngestionStatistics(
+                    chunks_created=0,
+                    file_size_bytes=file_size_bytes,
+                ),
+                metadata_extracted=document_metadata,
+                warnings=warnings,
+                errors=errors,
+            )
+
+        await emit_progress(IngestionStage.CHUNKING, 50, f"Created {len(chunks)} chunks")
+
+        # Stage 4: Generating embeddings
+        await emit_progress(IngestionStage.EMBEDDING, 55, "Generating embeddings...")
+
+        try:
+            embedded_chunks = await self.embedder.embed_chunks(chunks)
+        except Exception as e:
+            logger.exception(f"Failed to generate embeddings: {document_title}")
+            errors.append(f"Embedding generation failed: {str(e)}")
+            return DetailedIngestionResult(
+                document_id=None,
+                title=document_title,
+                status="failed",
+                statistics=IngestionStatistics(
+                    chunks_created=len(chunks),
+                    file_size_bytes=file_size_bytes,
+                ),
+                metadata_extracted=document_metadata,
+                warnings=warnings,
+                errors=errors,
+            )
+
+        await emit_progress(IngestionStage.EMBEDDING, 75, f"Generated embeddings for {len(embedded_chunks)} chunks")
+
+        # Calculate statistics
+        total_tokens = sum(chunk.token_count for chunk in embedded_chunks)
+        avg_chunk_tokens = total_tokens / len(embedded_chunks) if embedded_chunks else 0.0
+        sections_found = document_metadata.get("section_count", 0)
+
+        # Stage 5: Storing in database
+        await emit_progress(IngestionStage.STORING, 80, "Storing document in database...")
+
+        try:
+            document_id = await self._save_to_mongodb(
+                document_title,
+                document_source,
+                document_content,
+                embedded_chunks,
+                document_metadata,
+            )
+        except Exception as e:
+            logger.exception(f"Failed to store document: {document_title}")
+            errors.append(f"Storage failed: {str(e)}")
+            return DetailedIngestionResult(
+                document_id=None,
+                title=document_title,
+                status="failed",
+                statistics=IngestionStatistics(
+                    chunks_created=len(embedded_chunks),
+                    total_tokens=total_tokens,
+                    avg_chunk_tokens=avg_chunk_tokens,
+                    sections_found=sections_found,
+                    file_size_bytes=file_size_bytes,
+                ),
+                metadata_extracted=document_metadata,
+                warnings=warnings,
+                errors=errors,
+            )
+
+        await emit_progress(IngestionStage.STORING, 90, f"Document stored with ID: {document_id}")
+
+        # Stage 6: Verification (optional - just confirm storage)
+        await emit_progress(IngestionStage.VERIFYING, 95, "Verifying document storage...")
+
+        # Calculate final processing time
+        processing_time_ms = (datetime.now() - start_time).total_seconds() * 1000
+
+        # Build final statistics
+        statistics = IngestionStatistics(
+            chunks_created=len(embedded_chunks),
+            total_tokens=total_tokens,
+            avg_chunk_tokens=avg_chunk_tokens,
+            sections_found=sections_found,
+            sections_expected=0,  # Could be enhanced based on document type
+            file_size_bytes=file_size_bytes,
+            processing_time_ms=processing_time_ms,
+        )
+
+        # Determine final status
+        status = "success" if not errors else ("partial" if document_id else "failed")
+
+        await emit_progress(IngestionStage.COMPLETE, 100, "Ingestion complete")
+
+        logger.info(
+            f"Ingestion complete for {document_title}: "
+            f"{len(embedded_chunks)} chunks, {total_tokens} tokens, {processing_time_ms:.0f}ms"
+        )
+
+        return DetailedIngestionResult(
+            document_id=document_id,
+            title=document_title,
+            status=status,
+            statistics=statistics,
+            metadata_extracted=document_metadata,
+            warnings=warnings,
+            errors=errors,
         )
 
     async def ingest_documents(
@@ -727,6 +1238,11 @@ async def main() -> None:
         action="store_true",
         help="Process documents but don't save to MongoDB (for testing)"
     )
+    parser.add_argument(
+        "--skip-classification",
+        action="store_true",
+        help="Skip automatic industry classification using Gemini API"
+    )
 
     args = parser.parse_args()
 
@@ -742,7 +1258,8 @@ async def main() -> None:
         chunk_size=args.chunk_size,
         chunk_overlap=args.chunk_overlap,
         max_chunk_size=args.chunk_size * 2,
-        max_tokens=args.max_tokens
+        max_tokens=args.max_tokens,
+        skip_classification=args.skip_classification
     )
 
     # Create and run pipeline - clean by default unless --no-clean is specified
@@ -752,9 +1269,12 @@ async def main() -> None:
         clean_before_ingest=not args.no_clean,  # Clean by default
         dry_run=args.dry_run
     )
-    
+
     if args.dry_run:
         print("\n[DRY-RUN MODE] Documents will be processed but not saved to MongoDB")
+
+    if args.skip_classification:
+        print("[SKIP-CLASSIFICATION] Industry classification will be skipped")
 
     def progress_callback(current: int, total: int) -> None:
         print(f"Progress: {current}/{total} documents processed")

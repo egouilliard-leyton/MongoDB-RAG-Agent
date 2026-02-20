@@ -10,7 +10,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.ingestion.metadata_extractor import (
     extract_tax_interpretation_metadata,
     extract_structured_metadata,
-    extract_title_enhanced
+    extract_title_enhanced,
+    extract_interpretation_stance,
 )
 from test_scripts.test_utils import (
     load_sample_markdown,
@@ -242,6 +243,58 @@ Minimal document title
     return True
 
 
+def test_extract_interpretation_stance():
+    """Test extraction of interpretation stance (positive/partial/negative)."""
+    print("\n" + "="*80)
+    print("Test: extract_interpretation_stance()")
+    print("="*80)
+
+    cases = [
+        (
+            "positive-heading",
+            "## Interpretacja indywidualna - stanowisko prawidłowe\n\nTreść:\n...",
+            "positive",
+        ),
+        (
+            "negative-heading",
+            "## Interpretacja indywidualna – stanowisko nieprawidłowe\n\nTreść:\n...",
+            "negative",
+        ),
+        (
+            "partial-heading-diacriticsless",
+            "## Interpretacja indywidualna - stanowisko w czesci prawidlowe i w czesci nieprawidlowe\n\nTreść:\n...",
+            "partial",
+        ),
+        (
+            "positive-paragraph",
+            "Szanowni Państwo,\n\nstwierdzam, że stanowisko Wnioskodawcy jest prawidłowe.\n",
+            "positive",
+        ),
+    ]
+
+    all_passed = True
+
+    for name, content, expected in cases:
+        result = extract_interpretation_stance(content)
+        stance = result.get("stance")
+        evidence = result.get("evidence") or []
+
+        print(f"\nCase: {name}")
+        print(f"Extracted stance: {stance}")
+        print(f"Evidence: {evidence[:2]}")
+
+        if stance != expected:
+            print(f"✗ Expected stance='{expected}', got '{stance}'")
+            all_passed = False
+        elif not evidence:
+            print("✗ Expected some evidence, got none")
+            all_passed = False
+        else:
+            print("  ✓ OK")
+
+    return all_passed
+
+
 def test_real_pdf_extraction():
     """Test metadata extraction from real PDF file."""
     print("\n" + "="*80)
@@ -276,6 +329,10 @@ def test_real_pdf_extraction():
         print(f"⚠ Sample PDF not found: {e}")
         print("  Skipping real PDF test")
         return True  # Don't fail if PDF not available
+    except ImportError as e:
+        print(f"⚠ Docling not available: {e}")
+        print("  Skipping real PDF test")
+        return True  # Don't fail if Docling isn't installed in this environment
     except Exception as e:
         print(f"✗ Error extracting from real PDF: {e}")
         import traceback
@@ -297,6 +354,7 @@ def main():
     results.append(("extract_title_enhanced", test_extract_title_enhanced()))
     results.append(("keywords_extraction", test_keywords_extraction()))
     results.append(("missing_fields", test_missing_fields()))
+    results.append(("extract_interpretation_stance", test_extract_interpretation_stance()))
     results.append(("real_pdf_extraction", test_real_pdf_extraction()))
     
     # Summary

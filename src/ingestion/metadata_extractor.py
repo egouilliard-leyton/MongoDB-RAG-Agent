@@ -10,9 +10,173 @@ This module extracts structured metadata from:
 import os
 import re
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+_POLISH_DIACRITICS_MAP = str.maketrans(
+    {
+        "ą": "a",
+        "ć": "c",
+        "ę": "e",
+        "ł": "l",
+        "ń": "n",
+        "ó": "o",
+        "ś": "s",
+        "ż": "z",
+        "ź": "z",
+        "Ą": "a",
+        "Ć": "c",
+        "Ę": "e",
+        "Ł": "l",
+        "Ń": "n",
+        "Ó": "o",
+        "Ś": "s",
+        "Ż": "z",
+        "Ź": "z",
+    }
+)
+
+
+def _normalize_pl_text(text: str) -> str:
+    """
+    Normalize Polish text to improve matching across OCR/Docling variants:
+    - lowercase
+    - replace en/em dashes with '-'
+    - strip Polish diacritics (ą->a, ł->l, etc.)
+    - collapse whitespace
+    """
+    if not text:
+        return ""
+    text = text.replace("–", "-").replace("—", "-")
+    text = text.lower().translate(_POLISH_DIACRITICS_MAP)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def extract_interpretation_stance(content: str) -> Dict[str, Any]:
+    """
+    Extract tax interpretation "stance" (stanowisko) from Docling markdown/text.
+
+    Recognizes patterns like:
+    - "Interpretacja indywidualna - stanowisko prawidłowe" -> positive
+    - "Interpretacja indywidualna - stanowisko nieprawidłowe" -> negative
+    - "... - stanowisko w części prawidłowe i w części nieprawidłowe" -> partial
+      (also matches diacritics-less variants produced by OCR).
+
+    Returns:
+        {
+            "stance": Optional[str] ("positive" | "partial" | "negative"),
+            "evidence": List[str]  # matching lines/paragraphs (max 5)
+        }
+    """
+    if not content:
+        return {"stance": None, "evidence": []}
+
+    # Prefer early content (Docling tends to place the stance heading near the start of "Treść:")
+    lines = content.split("\n")
+    candidate_lines: List[Tuple[int, str]] = []
+    for idx, raw in enumerate(lines[:250]):  # header + early body
+        s = raw.strip()
+        if not s:
+            continue
+        norm = _normalize_pl_text(s)
+        if "stanowisko" in norm or "interpretacja indywidualna" in norm:
+            candidate_lines.append((idx, s))
+
+    # Fallback: whole doc, but only lines that include 'stanowisko' to stay cheap.
+    if not candidate_lines:
+        for idx, raw in enumerate(lines):
+            s = raw.strip()
+            if not s:
+                continue
+            if "stanowisko" in _normalize_pl_text(s):
+                candidate_lines.append((idx, s))
+
+    # Classify: partial first (contains both positive+negative keywords)
+    # NOTE: patterns operate on normalized text (diacritics stripped).
+    # We keep them flexible (allow a few words between "stanowisko" and verdict)
+    # because Docling may output e.g. "stanowisko Wnioskodawcy jest prawidłowe".
+    partial_patterns = [
+        r"stanowisko.*w\s+czesci\s+prawidlowe.*w\s+czesci\s+nieprawidlowe",
+        r"w\s+czesci\s+prawidlowe.*w\s+czesci\s+nieprawidlowe",
+    ]
+    negative_patterns = [
+        r"stanowisko(?:\s+\w+){0,6}\s+(jest\s+)?\bnieprawidlowe\b",
+        r"\bnieprawidlowe\b",
+    ]
+    positive_patterns = [
+        r"stanowisko(?:\s+\w+){0,6}\s+(jest\s+)?\bprawidlowe\b",
+        r"\bprawidlowe\b",
+    ]
+
+    stance: Optional[str] = None
+    evidence: List[str] = []
+
+    def _maybe_add_evidence(text: str) -> None:
+        if text and text not in evidence:
+            evidence.append(text)
+
+    for _idx, line in candidate_lines:
+        norm = _normalize_pl_text(line)
+
+        for pat in partial_patterns:
+            if re.search(pat, norm, re.IGNORECASE):
+                stance = "partial"
+                _maybe_add_evidence(line)
+                break
+        if stance == "partial":
+            continue
+
+        for pat in negative_patterns:
+            if re.search(pat, norm, re.IGNORECASE):
+                stance = "negative"
+                _maybe_add_evidence(line)
+                break
+        if stance == "negative":
+            continue
+
+        for pat in positive_patterns:
+            if re.search(pat, norm, re.IGNORECASE):
+                stance = "positive"
+                _maybe_add_evidence(line)
+                break
+
+    # Paragraph fallback: useful if stance is embedded in a sentence, not a heading.
+    if not stance:
+        paragraphs = re.split(r"\n\n+", content)
+        for para in paragraphs[:80]:
+            p = para.strip()
+            if not p:
+                continue
+            norm = _normalize_pl_text(p)
+            if "stanowisko" not in norm:
+                continue
+
+            for pat in partial_patterns:
+                if re.search(pat, norm, re.IGNORECASE):
+                    stance = "partial"
+                    _maybe_add_evidence(p[:300])
+                    break
+            if stance:
+                break
+            for pat in negative_patterns:
+                if re.search(pat, norm, re.IGNORECASE):
+                    stance = "negative"
+                    _maybe_add_evidence(p[:300])
+                    break
+            if stance:
+                break
+            for pat in positive_patterns:
+                if re.search(pat, norm, re.IGNORECASE):
+                    stance = "positive"
+                    _maybe_add_evidence(p[:300])
+                    break
+            if stance:
+                break
+
+    return {"stance": stance, "evidence": evidence[:5]}
 
 
 def extract_tax_interpretation_metadata(content: str, file_path: str) -> Dict:
@@ -168,11 +332,22 @@ def extract_structured_metadata(file_path: str) -> Dict:
     match = re.match(pattern, name_without_ext)
 
     if match:
+        document_type = match.group(3)
+        document_number = match.group(4)
+
+        # Some document series encode a sub-type as the first numeric segment (e.g. KDIB1 + "3.4010.570"
+        # is commonly referred to as "KDIB1-3"). We only apply this normalization to KDIB* series to match
+        # existing expectations/tests.
+        if document_type.startswith("KDIB"):
+            first_segment = document_number.split(".", 1)[0]
+            if first_segment.isdigit():
+                document_type = f"{document_type}-{first_segment}"
+
         return {
             "document_date": match.group(1),
             "document_time": match.group(2),
-            "document_type": match.group(3),
-            "document_number": match.group(4),
+            "document_type": document_type,
+            "document_number": document_number,
             "document_year": match.group(5),
             "revision": match.group(6),
             "author": match.group(7),

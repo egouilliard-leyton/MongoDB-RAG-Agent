@@ -171,6 +171,8 @@ MongoDB-RAG-Agent/
 │   ├── cli.py                    # ✅ Rich-based conversational CLI
 │   ├── streamlit_app.py          # ✅ Streamlit web interface
 │   ├── prompts.py                # ✅ System prompts
+│   ├── api/                      # ✅ FastAPI backend
+│   ├── services/                 # ✅ Business logic services
 │   └── ingestion/
 │       ├── chunker.py            # ✅ Docling HybridChunker wrapper
 │       ├── embedder.py           # ✅ Batch embedding generation
@@ -179,14 +181,27 @@ MongoDB-RAG-Agent/
 │   ├── agent.py                  # Reference: Pydantic AI agent patterns
 │   ├── tools.py                  # Reference: PostgreSQL search tools
 │   └── cli.py                    # Reference: Rich CLI interface
-├── documents/                     # Document folder (13 sample documents included)
+├── docs/                          # Documentation
+│   ├── how-to/                   # User guides and tutorials
+│   └── technical/                # Technical documentation and reports
+├── scripts/                       # Utility and maintenance scripts
+│   ├── create_indexes.py         # MongoDB index creation
+│   ├── verify_indexes.py         # Index verification
+│   ├── diagnose_pdf_structure.py # PDF structure analysis
+│   └── extract_sample_content.py # Content extraction utilities
+├── test_scripts/                 # Test suite
+│   └── ...                       # Comprehensive test files
+├── pages/                         # Streamlit pages
+│   └── view_document.py          # Document viewer page
+├── frontend/                      # React frontend application
+│   └── ...                       # Frontend source code
+├── documents/                     # Document folder (sample documents included)
 ├── .claude/                       # Project documentation
 │   ├── PRD.md                    # Product requirements
 │   └── reference/                # MongoDB/Docling/Agent patterns
 ├── .agents/
 │   ├── plans/                    # Implementation plans (all phases)
 │   └── analysis/                 # Technical analysis & decisions
-├── comprehensive_e2e_test.py      # ✅ Full E2E validation (10/10 passed)
 └── pyproject.toml                # UV package configuration
 ```
 

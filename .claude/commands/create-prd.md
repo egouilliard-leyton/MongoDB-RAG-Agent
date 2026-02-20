@@ -1,151 +1,332 @@
 ---
-description: Create a Product Requirements Document from conversation
-argument-hint: [output-filename]
+description: Create a comprehensive Product Requirements Document (PRD) for a new project with interactive discovery questions
+allowed-tools: Read, Write, Edit, Glob, Grep, WebSearch, WebFetch, AskUserQuestion
 ---
 
-# Create PRD: Generate Product Requirements Document
+# PRD Creator for Ralph Wiggum Autonomous Development
 
-## Overview
+You are a supportive product manager guiding the user through structured PRD creation. Your goal is to gather all necessary information to create a comprehensive PRD that can be used with the Ralph Wiggum autonomous development loop.
 
-Generate a comprehensive Product Requirements Document (PRD) based on the current conversation context and requirements discussed. Use the structure and sections defined below to create a thorough, professional PRD.
+## Phase 1: Discovery Questions
 
-## Output File
+Ask questions **one at a time** using the AskUserQuestion tool. Maintain a friendly, educational tone. Use a 70/30 split: 70% understanding their concept, 30% educating on options.
 
-Write the PRD to: `$ARGUMENTS` (default: `PRD.md`)
+### Question Flow
 
-## PRD Structure
+**1. Project Overview**
+Start by asking the user to describe their project idea at a high level.
+- "Tell me about the application or project you want to build. What problem are you trying to solve?"
 
-Create a well-structured PRD with the following sections. Adapt depth and detail based on available information:
+**2. Target Audience**
+- "Who is the primary user or audience for this project? What are their key needs or pain points?"
 
-### Required Sections
+**3. Core Features**
+- "What are the 3-5 core features or capabilities you want this project to have? List them in order of priority."
 
-**1. Executive Summary**
-- Concise product overview (2-3 paragraphs)
-- Core value proposition
-- MVP goal statement
+**4. Tech Stack Preferences**
+Ask about their tech stack. Offer to research options if they're unsure:
+- "Do you have a preferred tech stack in mind? (e.g., React/Next.js, Vue, Svelte, vanilla JS for frontend; Node, Python, Go for backend; PostgreSQL, MongoDB, SQLite for database)"
+- If they're unsure, offer: "I can research and recommend options based on your project requirements. Would you like me to do that?"
 
-**2. Mission**
-- Product mission statement
-- Core principles (3-5 key principles)
+**5. Architecture**
+- "What type of architecture are you envisioning? Options include:"
+  - Monolithic (single codebase)
+  - Microservices
+  - Serverless
+  - Static site with API
+  - Full-stack framework (Next.js, Nuxt, SvelteKit)
+- Offer to research and recommend if they're unsure.
 
-**3. Target Users**
-- Primary user personas
-- Technical comfort level
-- Key user needs and pain points
+**6. UI/UX Approach**
+- "What's your vision for the UI/UX? Do you have:"
+  - Existing wireframes or designs?
+  - A design system preference (Tailwind, Material UI, Shadcn, custom)?
+  - Specific branding requirements?
 
-**4. MVP Scope**
-- **In Scope:** Core functionality for MVP (use ✅ checkboxes)
-- **Out of Scope:** Features deferred to future phases (use ❌ checkboxes)
-- Group by categories (Core Functionality, Technical, Integration, Deployment)
+**7. Data & State Management**
+- "What data will your application need to manage? Consider:"
+  - User data (authentication, profiles)
+  - Application state
+  - External API integrations
+  - File storage needs
 
-**5. User Stories**
-- Primary user stories (5-8 stories) in format: "As a [user], I want to [action], so that [benefit]"
-- Include concrete examples for each story
-- Add technical user stories if relevant
+**8. Authentication & Security**
+- "What are your authentication and security requirements?"
+  - No auth needed
+  - Simple email/password
+  - OAuth (Google, GitHub, etc.)
+  - Enterprise SSO
+  - Role-based access control
 
-**6. Core Architecture & Patterns**
-- High-level architecture approach
-- Directory structure (if applicable)
-- Key design patterns and principles
-- Technology-specific patterns
+**9. Third-Party Integrations**
+- "Are there any third-party services or APIs you need to integrate with? (payment processors, email services, analytics, etc.)"
 
-**7. Tools/Features**
-- Detailed feature specifications
-- If building an agent: Tool designs with purpose, operations, and key features
-- If building an app: Core feature breakdown
-
-**8. Technology Stack**
-- Backend/Frontend technologies with versions
-- Dependencies and libraries
-- Optional dependencies
-- Third-party integrations
-
-**9. Security & Configuration**
-- Authentication/authorization approach
-- Configuration management (environment variables, settings)
-- Security scope (in-scope and out-of-scope)
-- Deployment considerations
-
-**10. API Specification** (if applicable)
-- Endpoint definitions
-- Request/response formats
-- Authentication requirements
-- Example payloads
+**10. Development Constraints**
+- "Are there any constraints I should know about?"
+  - Timeline expectations
+  - Budget considerations
+  - Hosting preferences
+  - Team size/skills
 
 **11. Success Criteria**
-- MVP success definition
-- Functional requirements (use ✅ checkboxes)
-- Quality indicators
-- User experience goals
+- "How will you know when this project is complete? What does 'done' look like?"
 
-**12. Implementation Phases**
-- Break down into 3-4 phases
-- Each phase includes: Goal, Deliverables (✅ checkboxes), Validation criteria
-- Realistic timeline estimates
+## Phase 2: Research (If Requested)
 
-**13. Future Considerations**
-- Post-MVP enhancements
-- Integration opportunities
-- Advanced features for later phases
+If the user requests research on any topic (tech stack, architecture, libraries), use WebSearch and WebFetch to:
+1. Find current best practices
+2. Compare relevant options
+3. Provide pros/cons
+4. Make a recommendation based on their requirements
 
-**14. Risks & Mitigations**
-- 3-5 key risks with specific mitigation strategies
+Present findings clearly and let the user make the final decision.
 
-**15. Appendix** (if applicable)
-- Related documents
-- Key dependencies with links
-- Repository/project structure
+## Phase 3: Generate the PRD
 
-## Instructions
+Once you have all the information, create the PRD file at `prd.md` in the project root.
 
-### 1. Extract Requirements
-- Review the entire conversation history
-- Identify explicit requirements and implicit needs
-- Note technical constraints and preferences
-- Capture user goals and success criteria
+### PRD Structure
 
-### 2. Synthesize Information
-- Organize requirements into appropriate sections
-- Fill in reasonable assumptions where details are missing
-- Maintain consistency across sections
-- Ensure technical feasibility
+```markdown
+# [Project Name] - Product Requirements Document
 
-### 3. Write the PRD
-- Use clear, professional language
-- Include concrete examples and specifics
-- Use markdown formatting (headings, lists, code blocks, checkboxes)
-- Add code snippets for technical sections where helpful
-- Keep Executive Summary concise but comprehensive
+## Overview
+[Brief description of what you're building and why]
 
-### 4. Quality Checks
-- ✅ All required sections present
-- ✅ User stories have clear benefits
-- ✅ MVP scope is realistic and well-defined
-- ✅ Technology choices are justified
-- ✅ Implementation phases are actionable
-- ✅ Success criteria are measurable
-- ✅ Consistent terminology throughout
+## Target Audience
+[Who is this for and what are their needs]
 
-## Style Guidelines
+## Core Features
+[List of core features with descriptions]
 
-- **Tone:** Professional, clear, action-oriented
-- **Format:** Use markdown extensively (headings, lists, code blocks, tables)
-- **Checkboxes:** Use ✅ for in-scope items, ❌ for out-of-scope
-- **Specificity:** Prefer concrete examples over abstract descriptions
-- **Length:** Comprehensive but scannable (typically 30-60 sections worth of content)
+## Tech Stack
+- **Frontend**: [framework/library]
+- **Backend**: [framework/runtime]
+- **Database**: [database choice]
+- **Styling**: [CSS approach]
+- **Authentication**: [auth approach]
+- **Hosting**: [deployment target]
 
-## Output Confirmation
+## Architecture
+[Description of the overall architecture]
 
-After creating the PRD:
-1. Confirm the file path where it was written
-2. Provide a brief summary of the PRD contents
-3. Highlight any assumptions made due to missing information
-4. Suggest next steps (e.g., review, refinement, planning)
+## Data Model
+[Key entities and their relationships]
 
-## Notes
+## UI/UX Requirements
+[Design approach, components needed, responsive requirements]
 
-- If critical information is missing, ask clarifying questions before generating
-- Adapt section depth based on available details
-- For highly technical products, emphasize architecture and technical stack
-- For user-facing products, emphasize user stories and experience
-- This command contains the complete PRD template structure - no external references needed
+## Security Considerations
+[Authentication, authorization, data protection]
+
+## Third-Party Integrations
+[External services and APIs]
+
+## Constraints & Assumptions
+[Timeline, budget, technical constraints]
+
+## Success Criteria
+[What defines project completion]
+
+---
+
+## Task List
+
+```json
+[
+  {
+    "category": "setup",
+    "description": "[First setup task]",
+    "steps": [
+      "[Step 1]",
+      "[Step 2]",
+      "[Step 3]"
+    ],
+    "passes": false
+  },
+  {
+    "category": "feature",
+    "description": "[Feature task]",
+    "steps": [
+      "[Step 1]",
+      "[Step 2]"
+    ],
+    "passes": false
+  }
+]
+```
+
+---
+
+## Agent Instructions
+
+1. Read `activity.md` first to understand current state
+2. Find next task with `"passes": false`
+3. Complete all steps for that task
+4. Verify in browser using agent-browser
+5. Update task to `"passes": true`
+6. Log completion in `activity.md`
+7. Repeat until all tasks pass
+
+**Important:** Only modify the `passes` field. Do not remove or rewrite tasks.
+
+---
+
+## Completion Criteria
+All tasks marked with `"passes": true`
+
+### Task Generation Guidelines
+
+Generate tasks based on the features and requirements gathered. Tasks should be:
+- **Atomic**: Each task should be completable in one iteration
+- **Verifiable**: Each task should have clear success criteria
+- **Ordered**: Tasks should be in logical dependency order
+- **Categorized**: Use categories like `setup`, `feature`, `integration`, `styling`, `testing`
+
+**Typical task categories:**
+1. **setup**: Project initialization, dependencies, configuration
+2. **feature**: Core feature implementations
+3. **integration**: Third-party service integrations
+4. **styling**: UI/UX implementation
+5. **testing**: Test coverage and verification
+
+## Phase 4: Update PROMPT.md
+
+After creating the PRD, update the `PROMPT.md` file to reflect the project specifics.
+
+Read the current `PROMPT.md` file and update the following sections:
+1. **Start command**: Replace the placeholder with the actual command to start the dev server (based on tech stack chosen)
+2. **Build/lint commands**: Add any relevant build or lint commands
+3. **Project-specific instructions**: Add any special considerations from the PRD
+
+Use the Edit tool to update these sections while preserving the rest of the template.
+
+## Phase 5: Update .claude/settings.json
+
+**This step is critical for autonomous operation.** The agent must have permissions to run all CLI commands required by the project.
+
+Read the current `.claude/settings.json` file and update the `permissions.allow` array based on the PRD's tech stack and requirements.
+
+### Permission Mapping by Technology
+
+Add permissions based on what was chosen in the PRD:
+
+**Package Managers:**
+- npm: Already included (`Bash(npm run:*)`, `Bash(npm install:*)`, etc.)
+- pnpm: Already included (`Bash(pnpm:*)`)
+- yarn: Already included (`Bash(yarn:*)`)
+- bun: Already included (`Bash(bun:*)`)
+
+**Frameworks (add if using):**
+- Next.js: `Bash(next:*)`
+- Vite: `Bash(vite:*)`
+- Nuxt: `Bash(nuxt:*)`
+- SvelteKit: `Bash(svelte-kit:*)`
+- Astro: `Bash(astro:*)`
+- Remix: `Bash(remix:*)`
+
+**Databases & ORMs (add if using):**
+- Prisma: `Bash(prisma:*)`, `Bash(npx prisma:*)`
+- Drizzle: `Bash(drizzle-kit:*)`
+- TypeORM: `Bash(typeorm:*)`
+- Supabase: `Bash(supabase:*)`
+- PlanetScale: `Bash(pscale:*)`
+- MongoDB: `Bash(mongosh:*)`
+
+**Authentication (add if using):**
+- Auth.js/NextAuth: No additional CLI
+- Clerk: `Bash(clerk:*)`
+- Supabase Auth: Covered by `Bash(supabase:*)`
+- Firebase Auth: `Bash(firebase:*)`
+
+**Cloud/Hosting (add if using):**
+- Vercel: `Bash(vercel:*)`
+- Netlify: `Bash(netlify:*)`
+- Railway: `Bash(railway:*)`
+- Fly.io: `Bash(fly:*)`, `Bash(flyctl:*)`
+- AWS: `Bash(aws:*)` (be careful with this one)
+- Firebase: `Bash(firebase:*)`
+- Cloudflare: `Bash(wrangler:*)`
+
+**Testing (add if using):**
+- Vitest: `Bash(vitest:*)`
+- Jest: `Bash(jest:*)`
+- Playwright: `Bash(playwright:*)`
+- Cypress: `Bash(cypress:*)`
+
+**Other Common Tools:**
+- TypeScript: `Bash(tsc:*)`, `Bash(tsx:*)`
+- ESLint: `Bash(eslint:*)`
+- Prettier: `Bash(prettier:*)`
+- Tailwind: `Bash(tailwindcss:*)`
+- Biome: `Bash(biome:*)`
+- Turbo: `Bash(turbo:*)`
+- Docker Compose: `Bash(docker compose:*)`
+- Make: `Bash(make:*)`
+
+### How to Update settings.json
+
+1. Read the current `.claude/settings.json`
+2. Parse the existing `permissions.allow` array
+3. Add new permissions based on the tech stack chosen in the PRD
+4. Do NOT remove existing permissions (they are safe defaults)
+5. Do NOT add overly broad permissions like `Bash` without specifiers
+6. Write the updated settings.json
+
+**Example:** If the PRD specifies Next.js + Prisma + Vercel, add:
+```json
+"Bash(next:*)",
+"Bash(prisma:*)",
+"Bash(npx prisma:*)",
+"Bash(vercel:*)"
+```
+
+## Phase 6: Create Supporting Files
+
+After creating the PRD and updating PROMPT.md and settings.json:
+
+1. **Create activity.md** if it doesn't exist:
+```markdown
+# [Project Name] - Activity Log
+
+## Current Status
+**Last Updated:** [Current Date]
+**Tasks Completed:** 0
+**Current Task:** None started
+
+---
+
+## Session Log
+
+<!-- Agent will append dated entries here -->
+```
+
+2. Confirm to the user that all files are ready for Ralph Wiggum autonomous development.
+
+## Phase 7: Final Verification Prompt
+
+After completing all phases, present the user with a verification checklist:
+
+```
+Your PRD is ready! Before running ralph.sh, please verify:
+
+**prd.md:**
+- [ ] All features captured in task list
+- [ ] Tasks are atomic and verifiable
+- [ ] Tasks are in correct dependency order
+- [ ] Success criteria is clear
+
+**PROMPT.md:**
+- [ ] Start command is correct for your tech stack
+- [ ] Build/lint commands are accurate
+
+**.claude/settings.json:**
+- [ ] All necessary CLI tools are permitted
+- [ ] No overly broad permissions added
+
+Once verified, run: ./ralph.sh 20
+
+Monitor progress in activity.md and screenshots/
+```
+
+Explicitly tell the user to verify these files before running the loop. This verification step is critical for a successful Ralph Wiggum run.

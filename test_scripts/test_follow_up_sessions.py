@@ -3,7 +3,7 @@ Test follow-up session creation and context injection.
 
 This script tests:
 - Follow-up session creation
-- Parent session marked as unsuccessful
+- Parent session outcome is NOT automatically modified
 - Round number incremented
 - Parent session ID set correctly
 - Previous Q&A context included in follow-up
@@ -97,20 +97,22 @@ async def test_follow_up_sessions():
         )
         logger.info(f"Created follow-up session: {follow_up_session_id}")
         
-        # Test 2: Verify parent session marked as unsuccessful
+        # Test 2: Verify parent session outcome is not automatically modified
         logger.info("\n" + "="*60)
-        logger.info("TEST 2: Verify Parent Session Marked as Unsuccessful")
+        logger.info("TEST 2: Verify Parent Session Outcome Not Auto-Modified")
         logger.info("="*60)
         
         parent_session_after = await qa_storage.get_session(parent_session_id)
         outcome_status = parent_session_after.get("outcome_status")
         
-        if outcome_status == "unsuccessful":
-            logger.info("✓ Parent session marked as unsuccessful")
+        if outcome_status == parent_session_before.get("outcome_status"):
+            logger.info("✓ Parent session outcome_status unchanged (expected)")
         else:
-            logger.warning(f"Parent session outcome_status: {outcome_status} (expected: unsuccessful)")
-            # Note: The create_follow_up_session might not automatically mark as unsuccessful
-            # It may need to be done explicitly or via API endpoint
+            logger.error(
+                "Parent session outcome_status was modified unexpectedly: "
+                f"{parent_session_before.get('outcome_status')} -> {outcome_status}"
+            )
+            return False
         
         # Test 3: Verify round number incremented
         logger.info("\n" + "="*60)

@@ -1,13 +1,14 @@
 """Main MongoDB RAG agent implementation with shared state."""
 
 from pydantic_ai import Agent, RunContext
-from pydantic import BaseModel
-from typing import Optional, Dict, List
+from pydantic import BaseModel, Field
+from typing import Optional, Dict, List, Any, Literal
 from collections import OrderedDict
 import uuid
 import logging
 import asyncio
 import time
+from datetime import datetime
 
 from pydantic_ai.ag_ui import StateDeps
 
@@ -19,6 +20,72 @@ from src.reasoning import analyze_question_complexity, merge_search_results, eva
 from src.settings import load_settings
 
 logger = logging.getLogger(__name__)
+
+
+class AnswerReview(BaseModel):
+    """Structured output for the review agent."""
+
+    verdict: Literal["good", "needs_info", "risk"] = Field(
+        ..., description="Overall verdict on answer quality/risk"
+    )
+    summary: str = Field(..., min_length=1, max_length=1000)
+    missing_info: List[str] = Field(default_factory=list)
+    confidence: float = Field(..., ge=0.0, le=1.0)
+
+
+async def run_review_agent(
+    question: str,
+    answer: str,
+    citations: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """
+    Review an answer and return a structured critique.
+
+    This is intentionally concise and safe: if review fails, we skip it (no hard-fail).
+    """
+    try:
+        llm = get_llm_model()
+        reviewer = Agent(
+            llm,
+            system_prompt=(
+                "You are a careful reviewer for tax consulting answers. "
+                "Assess whether the answer is complete, what information is missing, "
+                "and whether there are legal/assumption risks."
+            ),
+        )
+
+        # Compact citation context (titles only) to keep token usage low.
+        citation_titles = []
+        for c in citations[:8]:
+            title = c.get("title") or c.get("document_title") or ""
+            if title:
+                citation_titles.append(title)
+        citation_context = "\n".join(f"- {t}" for t in citation_titles) if citation_titles else "- (none)"
+
+        prompt = f"""Review the answer quality.
+
+Question:
+{question}
+
+Answer:
+{answer}
+
+Citations (titles only):
+{citation_context}
+
+Return JSON with:
+- verdict: one of ["good","needs_info","risk"]
+- summary: 1-3 short sentences
+- missing_info: list of concrete missing inputs/facts to ask the client for (can be empty)
+- confidence: number 0..1 (how confident you are in your review)
+"""
+
+        result = await reviewer.run(prompt, response_type=AnswerReview)
+        data: AnswerReview = result.data
+        return data.model_dump()
+    except Exception as e:
+        logger.warning(f"Review agent failed: {e}")
+        return None
 
 
 class RAGState(BaseModel):
@@ -46,30 +113,41 @@ async def search_knowledge_base(
     query: str,
     match_count: Optional[int] = 5,
     search_type: Optional[str] = "hybrid",
+    session_id: Optional[str] = None,
+    project_id: Optional[str] = None,
     document_type: Optional[str] = None,
     author: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     keywords: Optional[List[str]] = None,
-    section_type: Optional[str] = None
+    section_type: Optional[str] = None,
+    industry: Optional[str] = None,
+    tax_office_id: Optional[int] = None,
+    region: Optional[str] = None
 ) -> str:
     """
     Search the knowledge base for relevant information with optional metadata filtering.
 
-    Supports filtering by document type, author, date range, keywords, and section type.
-    This is especially useful for Polish tax interpretation documents.
+    Supports filtering by document type, author, date range, keywords, section type,
+    industry, tax office, and region. This is especially useful for Polish tax
+    interpretation documents and scoping searches to specific geographic/business contexts.
 
     Args:
         ctx: Agent runtime context with state dependencies
         query: Search query text
         match_count: Number of results to return (default: 5)
         search_type: Type of search - "semantic" or "text" or "hybrid" (default: hybrid)
+        session_id: Optional session ID to auto-scope to session's project
+        project_id: Filter by project ID (ObjectId as string)
         document_type: Filter by document type (e.g., "KDIP2", "KDIB1-3")
         author: Filter by author (e.g., "DK", "AZ")
         date_from: Filter by document date from (YYYY-MM-DD format, inclusive)
         date_to: Filter by document date to (YYYY-MM-DD format, inclusive)
         keywords: Filter by keywords (list of strings, matches any)
         section_type: Filter by section type (e.g., "przepis", "zagadnienie", "interpretation", "analysis")
+        industry: Filter by industry classification (e.g., "IT", "Construction", "Automotive")
+        tax_office_id: Filter by tax office ID (kodjednostki)
+        region: Filter by region/voivodeship (e.g., "mazowieckie", "śląskie")
 
     Returns:
         String containing the retrieved information formatted for the LLM with citation markers [1], [2], etc.
@@ -78,9 +156,29 @@ async def search_knowledge_base(
         f"search_knowledge_base called: query='{query[:100]}', type={search_type}, "
         f"match_count={match_count}, filters={{document_type={document_type}, "
         f"author={author}, date_from={date_from}, date_to={date_to}, "
-        f"keywords={keywords}, section_type={section_type}}}"
+        f"keywords={keywords}, section_type={section_type}, "
+        f"industry={industry}, tax_office_id={tax_office_id}, region={region}}}"
     )
     try:
+        # If caller provides a session_id and no explicit project_id, auto-scope to the session's project.
+        if project_id is None and session_id:
+            try:
+                from src.services.qa_storage import QAStorageService
+                from src.api.validators import validate_object_id
+
+                validate_object_id(session_id, "Session")
+                settings = load_settings()
+                qa_storage = QAStorageService(settings)
+                await qa_storage.initialize()
+                try:
+                    session = await qa_storage.get_session(session_id)
+                    project_id = session.get("project_id")
+                finally:
+                    await qa_storage.cleanup()
+            except Exception as e:
+                # Do not hard-fail: fall back to unscoped search if session lookup fails.
+                logger.warning(f"Failed to resolve project_id from session_id={session_id}: {e}")
+
         # Initialize database connection
         agent_deps = AgentDependencies()
         await agent_deps.initialize()
@@ -98,36 +196,48 @@ async def search_knowledge_base(
                 ctx=deps_ctx,
                 query=query,
                 match_count=match_count,
+                project_id=project_id,
                 document_type=document_type,
                 author=author,
                 date_from=date_from,
                 date_to=date_to,
                 keywords=keywords,
-                section_type=section_type
+                section_type=section_type,
+                industry=industry,
+                tax_office_id=tax_office_id,
+                region=region
             )
         elif search_type == "semantic":
             results = await semantic_search(
                 ctx=deps_ctx,
                 query=query,
                 match_count=match_count,
+                project_id=project_id,
                 document_type=document_type,
                 author=author,
                 date_from=date_from,
                 date_to=date_to,
                 keywords=keywords,
-                section_type=section_type
+                section_type=section_type,
+                industry=industry,
+                tax_office_id=tax_office_id,
+                region=region
             )
         else:
             results = await text_search(
                 ctx=deps_ctx,
                 query=query,
                 match_count=match_count,
+                project_id=project_id,
                 document_type=document_type,
                 author=author,
                 date_from=date_from,
                 date_to=date_to,
                 keywords=keywords,
-                section_type=section_type
+                section_type=section_type,
+                industry=industry,
+                tax_office_id=tax_office_id,
+                region=region
             )
 
         # Clean up
@@ -303,7 +413,8 @@ async def multi_search_knowledge_base(
     ctx: RunContext[StateDeps[RAGState]],
     queries: List[str],
     match_count_per_query: Optional[int] = 5,
-    search_type: Optional[str] = "hybrid"
+    search_type: Optional[str] = "hybrid",
+    project_id: Optional[str] = None
 ) -> str:
     """
     Execute multiple searches in parallel for different sub-questions and combine results.
@@ -340,11 +451,17 @@ async def multi_search_knowledge_base(
         search_tasks = []
         for query in queries:
             if search_type == "hybrid":
-                task = hybrid_search(deps_ctx, query, match_count_per_query)
+                task = hybrid_search(
+                    deps_ctx, query, match_count_per_query, project_id=project_id
+                )
             elif search_type == "semantic":
-                task = semantic_search(deps_ctx, query, match_count_per_query)
+                task = semantic_search(
+                    deps_ctx, query, match_count_per_query, project_id=project_id
+                )
             else:
-                task = text_search(deps_ctx, query, match_count_per_query)
+                task = text_search(
+                    deps_ctx, query, match_count_per_query, project_id=project_id
+                )
             search_tasks.append(task)
         
         # Wait for all searches to complete
@@ -447,7 +564,8 @@ async def refine_search(
     ctx: RunContext[StateDeps[RAGState]],
     original_query: str,
     previous_results_summary: str,
-    refinement_goal: str
+    refinement_goal: str,
+    project_id: Optional[str] = None
 ) -> str:
     """
     Refine a search query based on previous results and a specific goal.
@@ -538,7 +656,8 @@ Return ONLY the refined query text, nothing else."""
         results = await hybrid_search(
             ctx=deps_ctx,
             query=refined_query,
-            match_count=settings.default_match_count
+            match_count=settings.default_match_count,
+            project_id=project_id,
         )
         
         # Clean up
@@ -736,9 +855,11 @@ async def process_question_batch_standalone(
         # Check if this is a follow-up session and fetch parent session context
         follow_up_context = ""
         round_number = 1
+        session_project_id: Optional[str] = None
         if session_id:
             try:
                 session = await qa_storage.get_session(session_id)
+                session_project_id = session.get("project_id")
                 parent_session_id = session.get("metadata", {}).get("parent_session_id")
                 round_number = session.get("metadata", {}).get("round_number", 1)
                 
@@ -806,7 +927,8 @@ async def process_question_batch_standalone(
                 doc_results = await hybrid_search(
                     ctx=deps_ctx,
                     query=question,
-                    match_count=5
+                    match_count=5,
+                    project_id=session_project_id,
                 )
                 search_time = time.time() - search_start_time
                 logger.info(
@@ -818,13 +940,27 @@ async def process_question_batch_standalone(
                     }
                 )
                 if doc_results:
+                    unique_doc_ids = list(dict.fromkeys([r.document_id for r in doc_results]))
                     top_similarities = [r.similarity for r in doc_results[:3]]
+                    top_docs = [
+                        {
+                            "document_id": r.document_id,
+                            "title": (r.document_title or "")[:120],
+                            "source": (r.document_source or "")[:120],
+                            "similarity": round(float(r.similarity), 4) if r.similarity is not None else None,
+                        }
+                        for r in doc_results[:3]
+                    ]
                     logger.info(
-                        f"Top result similarities: {top_similarities}",
+                        f"Document retrieval summary: {len(doc_results)} chunks, {len(unique_doc_ids)} unique documents",
                         extra={
                             'question_index': idx,
                             'top_similarities': top_similarities,
-                            'top_result_title': doc_results[0].document_title[:100]
+                            'top_result_title': doc_results[0].document_title[:100],
+                            'project_id': session_project_id,
+                            'unique_document_count': len(unique_doc_ids),
+                            'unique_document_ids': unique_doc_ids[:10],
+                            'top_documents': top_docs,
                         }
                     )
                 else:
@@ -1047,6 +1183,36 @@ async def process_question_batch_standalone(
                     })
                     unique_docs[doc_id] = citation_num
                     citation_num += 1
+            logger.info(
+                f"Citations built from retrieval: {len(citations)} unique documents",
+                extra={
+                    "question_index": idx,
+                    "project_id": session_project_id,
+                    "citations_count": len(citations),
+                    "citation_document_ids": [c.get("document_id") for c in citations][:10],
+                    "top_citations": [
+                        {
+                            "citation_number": c.get("citation_number"),
+                            "document_id": c.get("document_id"),
+                            "title": (c.get("title") or "")[:120],
+                            "source": (c.get("source") or "")[:120],
+                            "similarity": round(float(c.get("similarity")), 4)
+                            if c.get("similarity") is not None
+                            else None,
+                        }
+                        for c in citations[:3]
+                    ],
+                },
+            )
+
+            # 3b. Review agent (for senior sessions)
+            review_data: Optional[Dict[str, Any]] = None
+            if session_id and user_role == "senior":
+                review_data = await run_review_agent(
+                    question=question,
+                    answer=answer_text,
+                    citations=citations,
+                )
             
             # 4. Save Q&A pair if senior user
             qa_pair_id = None
@@ -1064,7 +1230,8 @@ async def process_question_batch_standalone(
                         answer=answer_text,
                         citations=citations,
                         question_index=idx,
-                        user_role=user_role
+                        user_role=user_role,
+                        review=review_data,
                     )
                     save_time = time.time() - save_start_time
                     logger.info(
@@ -1124,6 +1291,7 @@ async def process_question_batch_standalone(
                 "answer": answer_text,
                 "final_answer": answer_text,
                 "citations": citations,
+                "review": review_data,
                 "qa_pair_id": qa_pair_id,
                 "question_index": idx
             }
@@ -1138,6 +1306,7 @@ async def process_question_batch_standalone(
                     "original_answer": qa_pair_data.get("original_answer"),
                     "edited_answer": qa_pair_data.get("edited_answer"),
                     "final_answer": qa_pair_data.get("final_answer", answer_text),
+                    "review": qa_pair_data.get("review", review_data),
                     "outcome_status": qa_pair_data.get("outcome_status"),
                     "created_at": created_at.isoformat() if created_at else None,
                     "updated_at": updated_at.isoformat() if updated_at else None,
@@ -1157,6 +1326,30 @@ async def process_question_batch_standalone(
                 }
             )
         
+        # Persist session-level review summary (optional)
+        if session_id and user_role == "senior":
+            reviews = [r.get("review") for r in results if r.get("review")]
+            if reviews:
+                verdict_counts: Dict[str, int] = {}
+                missing: List[str] = []
+                for rev in reviews:
+                    verdict = (rev or {}).get("verdict")
+                    if verdict:
+                        verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+                    for mi in (rev or {}).get("missing_info", []) or []:
+                        if mi and mi not in missing:
+                            missing.append(mi)
+
+                review_summary = {
+                    "verdict_counts": verdict_counts,
+                    "missing_info": missing[:25],
+                    "updated_at": datetime.utcnow().isoformat(),
+                }
+                try:
+                    await qa_storage.update_session_review_summary(session_id, review_summary)
+                except Exception as e:
+                    logger.warning(f"Failed to persist session review summary: {e}")
+
         await qa_storage.cleanup()
         
         # Return structured JSON response

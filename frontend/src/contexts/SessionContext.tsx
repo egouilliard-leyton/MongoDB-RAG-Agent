@@ -2,13 +2,21 @@ import React, { createContext, useContext, useState, useCallback, ReactNode } fr
 import type { QASession } from '../api/types';
 import * as api from '../api/client';
 
+interface CreateSessionOptions {
+  companyInfo?: string;
+  projectId?: string | null;
+  taxOfficeId?: number | null;
+  region?: string | null;
+}
+
 interface SessionContextType {
   currentSession: QASession | null;
   userRole: 'junior' | 'senior';
   isLoading: boolean;
   error: string | null;
-  createSession: (sessionName: string, companyInfo?: string) => Promise<void>;
+  createSession: (sessionName: string, options?: CreateSessionOptions) => Promise<void>;
   loadSession: (sessionId: string) => Promise<void>;
+  refreshCurrentSession: () => Promise<void>;
   loadParentSession: () => Promise<void>;
   listSessions: (limit?: number, skip?: number) => Promise<QASession[]>;
   updateUserRole: (role: 'junior' | 'senior') => void;
@@ -36,14 +44,17 @@ export const SessionProvider: React.FC<SessionProviderProps> = ({ children }) =>
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const createSession = useCallback(async (sessionName: string, companyInfo?: string) => {
+  const createSession = useCallback(async (sessionName: string, options?: CreateSessionOptions) => {
     setIsLoading(true);
     setError(null);
     try {
       const session = await api.createSession({
         name: sessionName,
         user_role: userRole,
-        company_info: companyInfo,
+        company_info: options?.companyInfo,
+        project_id: options?.projectId ?? null,
+        tax_office_id: options?.taxOfficeId ?? null,
+        region: options?.region ?? null,
       });
       setCurrentSession(session);
     } catch (err) {
@@ -70,6 +81,18 @@ export const SessionProvider: React.FC<SessionProviderProps> = ({ children }) =>
       setIsLoading(false);
     }
   }, []);
+
+  const refreshCurrentSession = useCallback(async () => {
+    if (!currentSession?._id) return;
+    // Keep this lightweight: no loading spinner, just a silent refresh of metadata.
+    try {
+      const session = await api.getSession(currentSession._id);
+      setCurrentSession(session);
+    } catch (err) {
+      // Non-fatal: the main Q&A flow should not fail because a refresh failed.
+      console.warn('[SessionContext] Failed to refresh current session', err);
+    }
+  }, [currentSession?._id]);
 
   const loadParentSession = useCallback(async () => {
     if (!currentSession?.metadata?.parent_session_id) {
@@ -126,6 +149,7 @@ export const SessionProvider: React.FC<SessionProviderProps> = ({ children }) =>
     error,
     createSession,
     loadSession,
+    refreshCurrentSession,
     loadParentSession,
     listSessions,
     updateUserRole,

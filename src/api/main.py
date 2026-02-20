@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.logging_config import setup_logging
 setup_logging()
 
-from src.api.routes import sessions, qa_pairs, questions, export, admin
+from src.api.routes import sessions, qa_pairs, questions, export, admin, projects, documents, ingestion, system, tax_offices, regions, industries, dashboard
 from src.api.middleware import error_handler_middleware, request_logging_middleware
 from src.services.background_tasks import BackgroundTaskScheduler
 from src.settings import load_settings
@@ -73,7 +73,15 @@ app.include_router(sessions.router)
 app.include_router(qa_pairs.router)
 app.include_router(questions.router)
 app.include_router(export.router)
+app.include_router(projects.router)
 app.include_router(admin.router)
+app.include_router(documents.router)
+app.include_router(ingestion.router)
+app.include_router(system.router)
+app.include_router(tax_offices.router)
+app.include_router(regions.router)
+app.include_router(industries.router)
+app.include_router(dashboard.router)
 
 
 @app.get("/health")

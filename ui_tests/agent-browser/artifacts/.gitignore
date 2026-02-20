@@ -1,0 +1,6 @@
+# Ignore all test artifacts (timestamped run directories)
+*/
+
+# Keep this file
+!.gitignore
+!.gitkeep
