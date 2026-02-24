@@ -50,6 +50,7 @@ import type {
   WorkflowTemplate,
   WorkflowListItem,
   WorkflowCreateRequest,
+  WorkflowType,
   // Dashboard extended types
   StageFunnelResponse,
   QualityTrendResponse,
@@ -832,9 +833,9 @@ export const getDashboardSummary = async (): Promise<DashboardSummary> => {
     const raw = response.data as any;
     // Transform API response shape to match frontend DashboardSummary interface
     return {
-      project_count: raw.counts?.projects ?? 0,
-      session_count: raw.counts?.sessions ?? 0,
-      qa_pair_count: raw.counts?.qa_pairs ?? 0,
+      project_count: raw.project_count ?? 0,
+      session_count: raw.session_count ?? 0,
+      qa_pair_count: raw.qa_pair_count ?? 0,
       success_rate: (raw.success_rate?.success_rate ?? 0) / 100,
       qa_quality: {
         total: raw.quality_metrics?.total_qa_pairs ?? 0,
@@ -842,7 +843,7 @@ export const getDashboardSummary = async (): Promise<DashboardSummary> => {
         unrated: raw.quality_metrics?.unrated_count ?? 0,
         good: raw.quality_metrics?.good_count ?? 0,
         bad: raw.quality_metrics?.bad_count ?? 0,
-        good_ratio: (raw.quality_metrics?.good_ratio ?? 0) / 100,
+        good_ratio: raw.quality_metrics?.good_ratio ?? 0,
         exemplar_count: raw.quality_metrics?.exemplar_count ?? 0,
       },
       timestamp: raw.generated_at ?? new Date().toISOString(),
@@ -857,8 +858,14 @@ export const getDashboardSummary = async (): Promise<DashboardSummary> => {
  */
 export const getRegionDistribution = async (): Promise<RegionDistribution> => {
   return retryRequest(async () => {
-    const response = await apiClient.get<RegionDistribution>('/api/dashboard/distribution/region');
-    return response.data;
+    const response = await apiClient.get('/api/dashboard/distribution/region');
+    const raw = response.data as any;
+    const toArray = (dict: Record<string, number>) =>
+      Object.entries(dict ?? {}).map(([name, count]) => ({ name, count }));
+    return {
+      projects: toArray(raw.projects),
+      sessions: toArray(raw.sessions),
+    } as RegionDistribution;
   });
 };
 
@@ -869,8 +876,11 @@ export const getRegionDistribution = async (): Promise<RegionDistribution> => {
  */
 export const getIndustryDistribution = async (): Promise<IndustryDistribution> => {
   return retryRequest(async () => {
-    const response = await apiClient.get<IndustryDistribution>('/api/dashboard/distribution/industry');
-    return response.data;
+    const response = await apiClient.get('/api/dashboard/distribution/industry');
+    const raw = response.data as any;
+    return {
+      industries: Object.entries(raw.industries ?? {}).map(([name, count]) => ({ name, count: count as number })),
+    } as IndustryDistribution;
   });
 };
 
@@ -927,7 +937,7 @@ export const getQualityMetrics = async (): Promise<QualityMetricsResponse> => {
         unrated: qm.unrated_count ?? 0,
         good: qm.good_count ?? 0,
         bad: qm.bad_count ?? 0,
-        good_ratio: (qm.good_ratio ?? 0) / 100,
+        good_ratio: qm.good_ratio ?? 0,
         exemplar_count: qm.exemplar_count ?? 0,
       },
       outcome_distribution: Object.entries(od).map(([name, count]) => ({
@@ -999,9 +1009,10 @@ export const applySuggestion = async (suggestionId: string): Promise<SettingsRes
 // Workflow Endpoints
 // =============================================================================
 
-export const listWorkflows = async (): Promise<WorkflowListItem[]> => {
+export const listWorkflows = async (workflowType?: WorkflowType): Promise<WorkflowListItem[]> => {
   return retryRequest(async () => {
-    const response = await apiClient.get<WorkflowListItem[]>('/api/workflows');
+    const params = workflowType ? { workflow_type: workflowType } : undefined;
+    const response = await apiClient.get<WorkflowListItem[]>('/api/workflows', { params });
     return response.data;
   });
 };
@@ -1044,6 +1055,17 @@ export const duplicateWorkflow = async (id: string, name?: string): Promise<Work
 export const seedDefaultWorkflow = async (): Promise<WorkflowTemplate> => {
   return retryRequest(async () => {
     const response = await apiClient.post<WorkflowTemplate>('/api/workflows/seed-default');
+    return response.data;
+  });
+};
+
+export const seedDefaultForType = async (workflowType: WorkflowType): Promise<WorkflowTemplate> => {
+  return retryRequest(async () => {
+    const response = await apiClient.post<WorkflowTemplate>(
+      '/api/workflows/seed-default-for-type',
+      undefined,
+      { params: { workflow_type: workflowType } }
+    );
     return response.data;
   });
 };
