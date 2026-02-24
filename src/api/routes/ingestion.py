@@ -2,7 +2,7 @@
 
 import asyncio
 import logging
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 
 from fastapi import APIRouter, Query
@@ -82,6 +82,33 @@ class IngestionStatsResponse(BaseModel):
 # =============================================================================
 
 
+def _serialize_metadata(metadata: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Recursively convert ObjectId values in a metadata dict to strings.
+
+    Args:
+        metadata: Raw metadata dict that may contain non-JSON-serializable types.
+
+    Returns:
+        New dict with ObjectId (and similar) values converted to strings.
+    """
+    from bson import ObjectId as BsonObjectId
+    result: Dict[str, Any] = {}
+    for key, value in metadata.items():
+        if isinstance(value, BsonObjectId):
+            result[key] = str(value)
+        elif isinstance(value, dict):
+            result[key] = _serialize_metadata(value)
+        elif isinstance(value, list):
+            result[key] = [
+                str(item) if isinstance(item, BsonObjectId) else item
+                for item in value
+            ]
+        else:
+            result[key] = value
+    return result
+
+
 def job_to_response(job: IngestionJob) -> IngestionJobResponse:
     """Convert IngestionJob model to response model."""
     return IngestionJobResponse(
@@ -99,7 +126,7 @@ def job_to_response(job: IngestionJob) -> IngestionJobResponse:
         completed_at=job.completed_at,
         duration_ms=job.duration_ms,
         statistics=job.statistics,
-        metadata_extracted=job.metadata_extracted,
+        metadata_extracted=_serialize_metadata(job.metadata_extracted),
         warnings=job.warnings,
         errors=job.errors,
     )
@@ -112,7 +139,7 @@ def job_to_response(job: IngestionJob) -> IngestionJobResponse:
 
 @router.get("/jobs", response_model=IngestionJobListResponse)
 async def list_ingestion_jobs(
-    status: Optional[str] = Query(
+    status: Optional[Literal["pending", "in_progress", "success", "partial", "failed"]] = Query(
         None,
         description="Filter by status: pending, in_progress, success, partial, failed",
     ),

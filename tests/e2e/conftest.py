@@ -20,7 +20,7 @@ async def api_client() -> httpx.AsyncClient:
     """Function-scoped async HTTP client — one fresh client per test to avoid event loop boundary errors."""
     async with httpx.AsyncClient(
         base_url=E2E_BASE_URL,
-        timeout=httpx.Timeout(60.0),
+        timeout=httpx.Timeout(180.0),  # LLM batch calls can take >60s
         follow_redirects=True,
     ) as client:
         yield client

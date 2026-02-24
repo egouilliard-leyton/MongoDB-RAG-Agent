@@ -182,12 +182,12 @@ class AnalyticsService:
             )
             raise
 
-    async def get_distribution_by_region(self) -> List[Dict[str, Any]]:
+    async def get_distribution_by_region(self) -> Dict[str, int]:
         """
         Get project distribution by region (voivodeship).
 
         Returns:
-            List of dictionaries with region name and count, sorted by count descending
+            Dictionary mapping region name to count, sorted by count descending
 
         Raises:
             ConnectionFailure: If unable to connect to MongoDB
@@ -210,13 +210,6 @@ class AnalyticsService:
             },
             {
                 "$sort": {"count": -1}
-            },
-            {
-                "$project": {
-                    "_id": 0,
-                    "region": "$_id",
-                    "count": 1
-                }
             }
         ]
 
@@ -225,7 +218,7 @@ class AnalyticsService:
                 self.settings.mongodb_collection_projects
             ].aggregate(pipeline)
             results: List[Dict[str, Any]] = await cursor.to_list(length=20)
-            return results
+            return {r["_id"]: r["count"] for r in results if r["_id"]}
         except OperationFailure as e:
             logger.exception(
                 "mongodb_operation_failed",
@@ -233,12 +226,12 @@ class AnalyticsService:
             )
             raise
 
-    async def get_distribution_by_industry(self) -> List[Dict[str, Any]]:
+    async def get_distribution_by_industry(self) -> Dict[str, int]:
         """
         Get project distribution by industry classification.
 
         Returns:
-            List of dictionaries with industry name and count, sorted by count descending
+            Dictionary mapping industry code to count, sorted by count descending
 
         Raises:
             ConnectionFailure: If unable to connect to MongoDB
@@ -261,13 +254,6 @@ class AnalyticsService:
             },
             {
                 "$sort": {"count": -1}
-            },
-            {
-                "$project": {
-                    "_id": 0,
-                    "industry": "$_id",
-                    "count": 1
-                }
             }
         ]
 
@@ -276,7 +262,7 @@ class AnalyticsService:
                 self.settings.mongodb_collection_projects
             ].aggregate(pipeline)
             results: List[Dict[str, Any]] = await cursor.to_list(length=30)
-            return results
+            return {r["_id"]: r["count"] for r in results if r["_id"]}
         except OperationFailure as e:
             logger.exception(
                 "mongodb_operation_failed",
@@ -434,7 +420,7 @@ class AnalyticsService:
 
             rated_count = good_count + bad_count
             unrated_count = total - rated_count
-            good_ratio = (good_count / rated_count * 100) if rated_count > 0 else 0.0
+            good_ratio = (good_count / rated_count) if rated_count > 0 else 0.0
 
             return {
                 "total_qa_pairs": total,
@@ -442,7 +428,7 @@ class AnalyticsService:
                 "good_count": good_count,
                 "bad_count": bad_count,
                 "unrated_count": unrated_count,
-                "good_ratio": round(good_ratio, 2),
+                "good_ratio": round(good_ratio, 4),
                 "exemplar_count": exemplar_count
             }
         except OperationFailure as e:
@@ -561,10 +547,12 @@ class AnalyticsService:
 
         Returns:
             Dictionary with complete dashboard data including:
-            - counts: Project, session, Q&A pair counts
+            - project_count: Total number of projects
+            - session_count: Total number of sessions
+            - qa_pair_count: Total number of Q&A pairs
             - success_rate: Session success rate metrics
             - quality_metrics: Q&A quality metrics
-            - distributions: By region, industry, tax office
+            - generated_at: ISO timestamp of data generation
 
         Raises:
             ConnectionFailure: If unable to connect to MongoDB
@@ -580,11 +568,9 @@ class AnalyticsService:
         quality_metrics = await self.get_qa_quality_metrics()
 
         return {
-            "counts": {
-                "projects": project_count,
-                "sessions": session_count,
-                "qa_pairs": quality_metrics["total_qa_pairs"]
-            },
+            "project_count": project_count,
+            "session_count": session_count,
+            "qa_pair_count": quality_metrics["total_qa_pairs"],
             "success_rate": success_rate,
             "quality_metrics": quality_metrics,
             "generated_at": datetime.utcnow().isoformat()
@@ -645,12 +631,12 @@ class AnalyticsService:
             )
             raise
 
-    async def get_session_distribution_by_region(self) -> List[Dict[str, Any]]:
+    async def get_session_distribution_by_region(self) -> Dict[str, int]:
         """
         Get session distribution by region (voivodeship).
 
         Returns:
-            List of dictionaries with region name and session count,
+            Dictionary mapping region name to session count,
             sorted by count descending
 
         Raises:
@@ -674,13 +660,6 @@ class AnalyticsService:
             },
             {
                 "$sort": {"count": -1}
-            },
-            {
-                "$project": {
-                    "_id": 0,
-                    "region": "$_id",
-                    "count": 1
-                }
             }
         ]
 
@@ -689,7 +668,7 @@ class AnalyticsService:
                 self.settings.mongodb_collection_qa_sessions
             ].aggregate(pipeline)
             results: List[Dict[str, Any]] = await cursor.to_list(length=20)
-            return results
+            return {r["_id"]: r["count"] for r in results if r["_id"]}
         except OperationFailure as e:
             logger.exception(
                 "mongodb_operation_failed",
@@ -740,12 +719,13 @@ class AnalyticsService:
             except Exception:
                 logger.debug("Could not load workflow template for stage labels")
 
-            # Aggregate projects by stage
+            # Aggregate projects by stage. Stage is stored as a dict with a "key"
+            # field; group by the key string to avoid "unhashable type: dict" errors.
             pipeline: List[Dict[str, Any]] = []
             if workflow_id:
                 pipeline.append({"$match": {"workflow_id": workflow_id}})
             pipeline.extend([
-                {"$group": {"_id": "$stage", "count": {"$sum": 1}}},
+                {"$group": {"_id": "$stage.key", "count": {"$sum": 1}}},
                 {"$sort": {"count": -1}},
             ])
 
@@ -868,7 +848,7 @@ class AnalyticsService:
             trend: List[Dict[str, Any]] = await cursor.to_list(length=400)
 
             return {
-                "trend": trend,
+                "trend_data": trend,
                 "period_days": days,
                 "granularity": granularity,
             }
@@ -962,10 +942,10 @@ class AnalyticsService:
             })
 
             return {
-                "total_documents": total_documents,
-                "total_chunks": total_chunks,
+                "document_count": total_documents,
+                "chunk_count": total_chunks,
                 "avg_chunks_per_doc": avg_chunks_per_doc,
-                "embedding_coverage": embedding_coverage,
+                "embedding_coverage_pct": round(embedding_coverage * 100, 2),
                 "last_ingestion": last_ingestion,
                 "stale_document_count": stale_document_count,
                 "stale_threshold_days": stale_threshold_days,
@@ -1008,14 +988,17 @@ class AnalyticsService:
             ].count_documents({"created_at": {"$gte": week_ago}})
 
             uptime_seconds = int(time.time() - _APP_START_TIME)
+            uptime_hours = round(uptime_seconds / 3600, 2)
 
             return {
                 "avg_response_time_ms": 0,
                 "avg_search_time_ms": 0,
+                "query_count": total_queries_24h,
                 "total_queries_24h": total_queries_24h,
                 "total_queries_7d": total_queries_7d,
                 "error_rate_24h": 0.0,
                 "uptime_seconds": uptime_seconds,
+                "uptime_hours": uptime_hours,
             }
         except OperationFailure as e:
             logger.exception(

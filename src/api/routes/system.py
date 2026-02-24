@@ -399,6 +399,11 @@ async def get_index_status(
     deps = AgentDependencies()
     recommendations: List[str] = []
 
+    # Validate document_id format if provided (raises ValidationError -> 400)
+    if document_id is not None:
+        from src.api.validators import validate_object_id
+        validate_object_id(document_id, "Document")
+
     try:
         await deps.initialize()
 

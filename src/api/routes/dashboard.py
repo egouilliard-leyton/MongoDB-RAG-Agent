@@ -42,11 +42,11 @@ async def get_distribution_by_region() -> Dict[str, Any]:
     """
     Get project and session distribution by region (voivodeship).
 
-    Returns breakdown of projects and sessions grouped by Polish voivodeship,
-    sorted by count in descending order.
+    Returns breakdown of projects and sessions grouped by Polish voivodeship.
+    Each key in 'projects' and 'sessions' is a region name mapping to a count.
 
     Returns:
-        Dictionary with project and session distributions by region
+        Dictionary with 'projects' and 'sessions' dicts keyed by region name
     """
     settings = load_settings()
     svc = AnalyticsService(settings)
@@ -67,11 +67,11 @@ async def get_distribution_by_industry() -> Dict[str, Any]:
     """
     Get project distribution by industry classification.
 
-    Returns breakdown of projects grouped by industry category,
-    sorted by count in descending order.
+    Returns breakdown of projects grouped by industry category.
+    The 'industries' value is a dict mapping industry code to count.
 
     Returns:
-        Dictionary with industry distribution data
+        Dictionary with 'industries' dict keyed by industry code
     """
     settings = load_settings()
     svc = AnalyticsService(settings)

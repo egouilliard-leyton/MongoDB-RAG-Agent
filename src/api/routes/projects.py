@@ -102,6 +102,8 @@ async def update_project_stage(project_id: str, request: ProjectStageUpdateReque
         )
         return ProjectResponse(**project)
     except ValueError as e:
+        if "not found" in str(e).lower():
+            raise NotFoundError("Project", project_id)
         raise ValidationError(str(e))
     finally:
         await svc.cleanup()

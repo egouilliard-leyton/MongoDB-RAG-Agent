@@ -118,6 +118,19 @@ async def upload_document(
     # Validate project_id format if provided
     if project_id:
         validate_object_id(project_id, "Project")
+        # Verify the project exists before starting ingestion
+        _mongo_client = AsyncMongoClient(
+            settings.mongodb_uri, serverSelectionTimeoutMS=5000
+        )
+        try:
+            _db = _mongo_client[settings.mongodb_database]
+            _project = await _db[settings.mongodb_collection_projects].find_one(
+                {"_id": ObjectId(project_id)}
+            )
+            if not _project:
+                raise NotFoundError("Project", project_id)
+        finally:
+            await _mongo_client.close()
 
     filename = file.filename or "upload"
     ext = os.path.splitext(filename)[1].lower()
@@ -156,9 +169,10 @@ async def upload_document(
                 f.write(content)
 
             # Build extra metadata
+            # Store project_id as string to ensure JSON-serializable metadata_extracted
             extra_metadata: Dict[str, Any] = {}
             if project_id:
-                extra_metadata["project_id"] = ObjectId(project_id)
+                extra_metadata["project_id"] = project_id
 
             # Create progress callback to update job status
             async def progress_callback(
@@ -246,9 +260,11 @@ async def list_documents(
 
     try:
         # Build query
+        # project_id is stored as a string in metadata (not ObjectId) for JSON
+        # serialization compatibility
         query: Dict[str, Any] = {}
         if project_id:
-            query["metadata.project_id"] = ObjectId(project_id)
+            query["metadata.project_id"] = project_id
         elif project_id == "":
             # Explicitly filter for documents with no project
             query["metadata.project_id"] = {"$exists": False}

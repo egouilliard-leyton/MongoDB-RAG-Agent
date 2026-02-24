@@ -18,107 +18,250 @@ DEFAULT_TEMPLATE_NAME = "Polish Tax Interpretations"
 DEFAULT_TEMPLATE_DESCRIPTION = "Standard workflow for IP Box / R&D tax interpretations"
 DEFAULT_STAGES: List[Dict[str, Any]] = [
     {
-        "id": "intake",
-        "label": "Intake",
-        "description": "Initial document collection",
+        "id": "prep_docs",
+        "label": "Prepare documents",
+        "description": "Gather and prepare all required documentation",
         "order": 0,
         "color": "#3B82F6",
         "config": {
             "system_prompt_append": None,
-            "search_params": {
-                "match_count": None,
-                "rrf_k": None,
-                "qa_history_match_count": None,
-            },
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
             "metadata_fields": [
-                {
-                    "key": "company_nip",
-                    "label": "Company NIP",
-                    "field_type": "text",
-                    "required": True,
-                    "options": None,
-                }
+                {"key": "company_nip", "label": "Company NIP", "field_type": "text", "required": True, "options": None}
             ],
             "auto_advance": False,
         },
         "transitions": [
-            {
-                "to_stage_id": "analysis",
-                "label": "Start Analysis",
-                "condition": None,
-            }
+            {"to_stage_id": "submit_first_instance", "label": "Next", "condition": None}
         ],
     },
     {
-        "id": "analysis",
-        "label": "Analysis",
-        "description": "AI-assisted analysis phase",
+        "id": "submit_first_instance",
+        "label": "Submit (1st instance)",
+        "description": "Submit application to the tax authority (1st instance)",
         "order": 1,
-        "color": "#8B5CF6",
+        "color": "#6366F1",
         "config": {
-            "system_prompt_append": "Focus on legal analysis and precedent identification.",
-            "search_params": {
-                "match_count": 10,
-                "rrf_k": None,
-                "qa_history_match_count": None,
-            },
+            "system_prompt_append": None,
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
             "metadata_fields": [],
             "auto_advance": False,
         },
         "transitions": [
-            {
-                "to_stage_id": "review",
-                "label": "Send to Review",
-                "condition": None,
-            }
+            {"to_stage_id": "await_response", "label": "Next", "condition": None}
         ],
     },
     {
-        "id": "review",
-        "label": "Review",
-        "description": "Senior consultant review",
+        "id": "await_response",
+        "label": "Await response",
+        "description": "Waiting for tax authority response",
         "order": 2,
         "color": "#F59E0B",
         "config": {
             "system_prompt_append": None,
-            "search_params": {
-                "match_count": None,
-                "rrf_k": None,
-                "qa_history_match_count": None,
-            },
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
             "metadata_fields": [],
             "auto_advance": False,
         },
         "transitions": [
-            {
-                "to_stage_id": "complete",
-                "label": "Approve",
-                "condition": None,
-            },
-            {
-                "to_stage_id": "analysis",
-                "label": "Return to Analysis",
-                "condition": None,
-            },
+            {"to_stage_id": "inquiry_check", "label": "Next", "condition": None}
         ],
     },
     {
-        "id": "complete",
-        "label": "Complete",
-        "description": "Workflow complete",
+        "id": "inquiry_check",
+        "label": "Inquiry check",
+        "description": "Check whether the authority has issued an inquiry for additional information",
         "order": 3,
+        "color": "#8B5CF6",
+        "config": {
+            "system_prompt_append": "Check whether the tax authority has requested additional information. If yes, prepare answers; if no, assess the outcome.",
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
+            "metadata_fields": [],
+            "auto_advance": False,
+        },
+        "transitions": [
+            {"to_stage_id": "prepare_answers", "label": "Inquiry received", "condition": None},
+            {"to_stage_id": "first_instance_outcome", "label": "No inquiry", "condition": None},
+        ],
+    },
+    {
+        "id": "prepare_answers",
+        "label": "Prepare answers",
+        "description": "Prepare and submit answers to the authority's inquiry",
+        "order": 4,
+        "color": "#06B6D4",
+        "config": {
+            "system_prompt_append": "Focus on answering the authority's inquiry precisely and with supporting legal citations.",
+            "search_params": {"match_count": 10, "rrf_k": None, "qa_history_match_count": None},
+            "metadata_fields": [],
+            "auto_advance": False,
+        },
+        "transitions": [
+            {"to_stage_id": "await_response", "label": "Submit answers", "condition": None}
+        ],
+    },
+    {
+        "id": "first_instance_outcome",
+        "label": "1st instance outcome",
+        "description": "1st instance decision received — determine next step",
+        "order": 5,
+        "color": "#8B5CF6",
+        "config": {
+            "system_prompt_append": "Carefully review the tax authority's decision. Identify whether it is positive (refund/favorable interpretation) or negative (rejection), and summarize the key legal arguments.",
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
+            "metadata_fields": [],
+            "auto_advance": False,
+        },
+        "transitions": [
+            {"to_stage_id": "end_refund", "label": "Positive outcome", "condition": None},
+            {"to_stage_id": "appeal_second_instance", "label": "Negative — appeal", "condition": None},
+        ],
+    },
+    {
+        "id": "appeal_second_instance",
+        "label": "Appeal (2nd instance)",
+        "description": "Decide whether to file an appeal to the 2nd instance authority",
+        "order": 6,
+        "color": "#F59E0B",
+        "config": {
+            "system_prompt_append": None,
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
+            "metadata_fields": [],
+            "auto_advance": False,
+        },
+        "transitions": [
+            {"to_stage_id": "end_no_appeal", "label": "Don't appeal", "condition": None},
+            {"to_stage_id": "second_instance_decision", "label": "File appeal", "condition": None},
+        ],
+    },
+    {
+        "id": "second_instance_decision",
+        "label": "2nd instance decision",
+        "description": "2nd instance authority decision received",
+        "order": 7,
+        "color": "#F59E0B",
+        "config": {
+            "system_prompt_append": "Analyze the second instance authority's decision. Identify grounds for a WSA complaint if the decision is unfavorable.",
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
+            "metadata_fields": [],
+            "auto_advance": False,
+        },
+        "transitions": [
+            {"to_stage_id": "complaint_wsa", "label": "Negative — WSA complaint", "condition": None},
+            {"to_stage_id": "return_reconsideration", "label": "Successful — reconsider", "condition": None},
+        ],
+    },
+    {
+        "id": "complaint_wsa",
+        "label": "Complaint to WSA",
+        "description": "File a complaint to the Provincial Administrative Court (WSA)",
+        "order": 8,
+        "color": "#EF4444",
+        "config": {
+            "system_prompt_append": None,
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
+            "metadata_fields": [],
+            "auto_advance": False,
+        },
+        "transitions": [
+            {"to_stage_id": "end_no_appeal", "label": "Don't complain", "condition": None},
+            {"to_stage_id": "wsa_decision", "label": "File WSA complaint", "condition": None},
+        ],
+    },
+    {
+        "id": "wsa_decision",
+        "label": "WSA decision",
+        "description": "WSA ruling received",
+        "order": 9,
+        "color": "#F59E0B",
+        "config": {
+            "system_prompt_append": "Review the WSA ruling carefully. If unfavorable, identify grounds for NSA complaint.",
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
+            "metadata_fields": [],
+            "auto_advance": False,
+        },
+        "transitions": [
+            {"to_stage_id": "complaint_nsa", "label": "Negative — NSA complaint", "condition": None},
+            {"to_stage_id": "return_reconsideration", "label": "Successful — reconsider", "condition": None},
+        ],
+    },
+    {
+        "id": "complaint_nsa",
+        "label": "Complaint to NSA",
+        "description": "File a complaint to the Supreme Administrative Court (NSA)",
+        "order": 10,
+        "color": "#DC2626",
+        "config": {
+            "system_prompt_append": None,
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
+            "metadata_fields": [],
+            "auto_advance": False,
+        },
+        "transitions": [
+            {"to_stage_id": "end_no_appeal", "label": "Don't complain", "condition": None},
+            {"to_stage_id": "nsa_decision", "label": "File NSA complaint", "condition": None},
+        ],
+    },
+    {
+        "id": "nsa_decision",
+        "label": "NSA decision",
+        "description": "NSA ruling received — final administrative judicial stage",
+        "order": 11,
+        "color": "#F59E0B",
+        "config": {
+            "system_prompt_append": "Analyze the NSA ruling. This is the final administrative judicial stage.",
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
+            "metadata_fields": [],
+            "auto_advance": False,
+        },
+        "transitions": [
+            {"to_stage_id": "end_no_appeal", "label": "Final refusal", "condition": None},
+            {"to_stage_id": "return_reconsideration", "label": "Successful — reconsider", "condition": None},
+        ],
+    },
+    {
+        "id": "end_refund",
+        "label": "End: refund",
+        "description": "Case resolved — refund or favorable interpretation granted",
+        "order": 12,
         "color": "#10B981",
         "config": {
             "system_prompt_append": None,
-            "search_params": {
-                "match_count": None,
-                "rrf_k": None,
-                "qa_history_match_count": None,
-            },
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
             "metadata_fields": [],
             "auto_advance": False,
         },
         "transitions": [],
+    },
+    {
+        "id": "end_no_appeal",
+        "label": "End: no appeal",
+        "description": "Case closed — no further appeals",
+        "order": 13,
+        "color": "#6B7280",
+        "config": {
+            "system_prompt_append": None,
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
+            "metadata_fields": [],
+            "auto_advance": False,
+        },
+        "transitions": [],
+    },
+    {
+        "id": "return_reconsideration",
+        "label": "Return for reconsideration",
+        "description": "Authority reconsidering — restarting from submission",
+        "order": 14,
+        "color": "#8B5CF6",
+        "config": {
+            "system_prompt_append": None,
+            "search_params": {"match_count": None, "rrf_k": None, "qa_history_match_count": None},
+            "metadata_fields": [],
+            "auto_advance": False,
+        },
+        "transitions": [
+            {"to_stage_id": "submit_first_instance", "label": "Resubmit", "condition": None}
+        ],
     },
 ]
 
@@ -691,7 +834,21 @@ class WorkflowService:
 
         existing = await self.db[self.collection_name].find_one(query)
         if existing:
-            return self._doc_to_api(existing)
+            if workflow_type == "project":
+                # Check if this is the outdated 4-stage placeholder (lacks real pipeline stages)
+                existing_stage_ids = {s.get("id") for s in existing.get("stages", [])}
+                expected_core_stages = {"prep_docs", "submit_first_instance", "await_response"}
+                if not expected_core_stages.issubset(existing_stage_ids):
+                    logger.info(
+                        "Replacing outdated project workflow template (id=%s) with full 15-stage pipeline",
+                        existing["_id"],
+                    )
+                    await self.db[self.collection_name].delete_one({"_id": existing["_id"]})
+                    # Fall through to create the correct template below
+                else:
+                    return self._doc_to_api(existing)
+            else:
+                return self._doc_to_api(existing)
 
         name, description, stages = _CONFIG[workflow_type]
         now = datetime.utcnow()
