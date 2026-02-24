@@ -1046,7 +1046,9 @@ export const deleteWorkflow = async (id: string): Promise<void> => {
 
 export const duplicateWorkflow = async (id: string, name?: string): Promise<WorkflowTemplate> => {
   return retryRequest(async () => {
-    const data = name ? { name } : undefined;
+    // Always send a body — FastAPI requires a JSON body for this endpoint even
+    // when the `name` field is optional. Sending `undefined` results in a 422.
+    const data = name ? { name } : {};
     const response = await apiClient.post<WorkflowTemplate>(`/api/workflows/${id}/duplicate`, data);
     return response.data;
   });
