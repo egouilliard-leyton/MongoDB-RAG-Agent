@@ -1,8 +1,9 @@
 """Analytics service for dashboard statistics and aggregations."""
 
 import logging
+import time
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from pymongo import AsyncMongoClient
 from pymongo.asynchronous.database import AsyncDatabase
@@ -11,6 +12,13 @@ from pymongo.errors import ConnectionFailure, OperationFailure
 from src.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+_APP_START_TIME: float = time.time()
+
+_DEFAULT_STAGE_COLORS: List[str] = [
+    "#3B82F6", "#8B5CF6", "#F59E0B", "#10B981",
+    "#EF4444", "#06B6D4", "#EC4899", "#F97316",
+]
 
 
 class AnalyticsService:
@@ -686,5 +694,332 @@ class AnalyticsService:
             logger.exception(
                 "mongodb_operation_failed",
                 extra={"operation": "get_session_distribution_by_region", "code": e.code}
+            )
+            raise
+
+    async def get_stage_funnel(
+        self, workflow_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Get stage distribution across projects as a funnel.
+
+        Aggregates projects by their current stage and enriches with
+        label/color from the default workflow template.
+
+        Args:
+            workflow_id: Optional workflow ID to filter projects
+
+        Returns:
+            Dictionary with funnel data and total project count
+
+        Raises:
+            ConnectionFailure: If unable to connect to MongoDB
+            OperationFailure: If MongoDB operation fails
+        """
+        await self.initialize()
+        assert self.db is not None, "Database not initialized"
+
+        try:
+            # Look up default workflow template for stage labels/colors
+            stage_lookup: Dict[str, Dict[str, str]] = {}
+            try:
+                template = await self.db[
+                    self.settings.mongodb_collection_workflow_templates
+                ].find_one({"is_default": True})
+                if template and "stages" in template:
+                    for stage in template["stages"]:
+                        stage_lookup[stage["id"]] = {
+                            "label": stage.get("label", stage["id"]),
+                            "color": stage.get(
+                                "color",
+                                _DEFAULT_STAGE_COLORS[
+                                    stage.get("order", 0) % len(_DEFAULT_STAGE_COLORS)
+                                ],
+                            ),
+                        }
+            except Exception:
+                logger.debug("Could not load workflow template for stage labels")
+
+            # Aggregate projects by stage
+            pipeline: List[Dict[str, Any]] = []
+            if workflow_id:
+                pipeline.append({"$match": {"workflow_id": workflow_id}})
+            pipeline.extend([
+                {"$group": {"_id": "$stage", "count": {"$sum": 1}}},
+                {"$sort": {"count": -1}},
+            ])
+
+            cursor = await self.db[
+                self.settings.mongodb_collection_projects
+            ].aggregate(pipeline)
+            results: List[Dict[str, Any]] = await cursor.to_list(length=100)
+
+            total_projects = sum(r["count"] for r in results)
+
+            funnel: List[Dict[str, Any]] = []
+            for idx, r in enumerate(results):
+                stage_id = r["_id"] or "unknown"
+                info = stage_lookup.get(stage_id, {})
+                funnel.append({
+                    "stage_id": stage_id,
+                    "label": info.get("label", stage_id),
+                    "color": info.get(
+                        "color",
+                        _DEFAULT_STAGE_COLORS[idx % len(_DEFAULT_STAGE_COLORS)],
+                    ),
+                    "count": r["count"],
+                    "percentage": (
+                        round(r["count"] / total_projects * 100, 1)
+                        if total_projects > 0
+                        else 0.0
+                    ),
+                })
+
+            return {"funnel": funnel, "total_projects": total_projects}
+        except OperationFailure as e:
+            logger.exception(
+                "mongodb_operation_failed",
+                extra={"operation": "get_stage_funnel", "code": e.code},
+            )
+            raise
+
+    async def get_quality_trend(
+        self, days: int = 30, granularity: str = "day"
+    ) -> Dict[str, Any]:
+        """
+        Get answer quality trend over time.
+
+        Aggregates Q&A pairs by date bucket and computes good/bad rating
+        counts and ratios for each period.
+
+        Args:
+            days: Number of days to look back (default: 30)
+            granularity: Time bucket size - "day", "week", or "month"
+
+        Returns:
+            Dictionary with trend data, period, and granularity
+
+        Raises:
+            ConnectionFailure: If unable to connect to MongoDB
+            OperationFailure: If MongoDB operation fails
+        """
+        await self.initialize()
+        assert self.db is not None, "Database not initialized"
+
+        start_date = datetime.utcnow() - timedelta(days=days)
+
+        pipeline: List[Dict[str, Any]] = [
+            {"$match": {"created_at": {"$gte": start_date}}},
+            {
+                "$group": {
+                    "_id": {
+                        "$dateTrunc": {
+                            "date": "$created_at",
+                            "unit": granularity,
+                        }
+                    },
+                    "good_count": {
+                        "$sum": {
+                            "$cond": [{"$eq": ["$rating_good", True]}, 1, 0]
+                        }
+                    },
+                    "bad_count": {
+                        "$sum": {
+                            "$cond": [{"$eq": ["$rating_good", False]}, 1, 0]
+                        }
+                    },
+                }
+            },
+            {"$sort": {"_id": 1}},
+            {
+                "$project": {
+                    "_id": 0,
+                    "date": {
+                        "$dateToString": {"format": "%Y-%m-%d", "date": "$_id"}
+                    },
+                    "good_count": 1,
+                    "bad_count": 1,
+                    "total_rated": {"$add": ["$good_count", "$bad_count"]},
+                    "good_ratio": {
+                        "$cond": [
+                            {"$gt": [{"$add": ["$good_count", "$bad_count"]}, 0]},
+                            {
+                                "$round": [
+                                    {
+                                        "$divide": [
+                                            "$good_count",
+                                            {"$add": ["$good_count", "$bad_count"]},
+                                        ]
+                                    },
+                                    2,
+                                ]
+                            },
+                            0.0,
+                        ]
+                    },
+                }
+            },
+        ]
+
+        try:
+            cursor = await self.db[
+                self.settings.mongodb_collection_qa_pairs
+            ].aggregate(pipeline)
+            trend: List[Dict[str, Any]] = await cursor.to_list(length=400)
+
+            return {
+                "trend": trend,
+                "period_days": days,
+                "granularity": granularity,
+            }
+        except OperationFailure as e:
+            logger.exception(
+                "mongodb_operation_failed",
+                extra={"operation": "get_quality_trend", "code": e.code},
+            )
+            raise
+
+    async def get_kb_health(self) -> Dict[str, Any]:
+        """
+        Get knowledge base health metrics.
+
+        Computes document/chunk counts, embedding coverage, last ingestion
+        time, and stale document count.
+
+        Returns:
+            Dictionary with KB health metrics
+
+        Raises:
+            ConnectionFailure: If unable to connect to MongoDB
+            OperationFailure: If MongoDB operation fails
+        """
+        await self.initialize()
+        assert self.db is not None, "Database not initialized"
+
+        stale_threshold_days = 90
+
+        try:
+            total_documents: int = await self.db[
+                self.settings.mongodb_collection_documents
+            ].count_documents({})
+
+            total_chunks: int = await self.db[
+                self.settings.mongodb_collection_chunks
+            ].count_documents({})
+
+            avg_chunks_per_doc = (
+                round(total_chunks / total_documents, 1)
+                if total_documents > 0
+                else 0.0
+            )
+
+            # Embedding coverage: fraction of chunks with a non-null, non-empty embedding
+            if total_chunks > 0:
+                embedded_count: int = await self.db[
+                    self.settings.mongodb_collection_chunks
+                ].count_documents({
+                    "embedding": {"$exists": True, "$ne": None, "$not": {"$size": 0}}
+                })
+                embedding_coverage = round(embedded_count / total_chunks, 4)
+            else:
+                embedding_coverage = 1.0
+
+            # Last ingestion: try known collection names
+            last_ingestion: Optional[str] = None
+            try:
+                coll_names: List[str] = await self.db.list_collection_names()
+                for coll_name in [
+                    "ingestion_jobs", "ingestion_tracker", "ingestion_sessions"
+                ]:
+                    if coll_name in coll_names:
+                        doc = await self.db[coll_name].find_one(
+                            {"completed_at": {"$exists": True, "$ne": None}},
+                            sort=[("completed_at", -1)],
+                        )
+                        if doc and doc.get("completed_at"):
+                            completed_at = doc["completed_at"]
+                            last_ingestion = (
+                                completed_at.isoformat()
+                                if hasattr(completed_at, "isoformat")
+                                else str(completed_at)
+                            )
+                            break
+            except Exception:
+                logger.debug("Could not determine last ingestion time")
+
+            # Stale documents: ingested_at (or created_at) older than threshold
+            stale_cutoff = datetime.utcnow() - timedelta(days=stale_threshold_days)
+            stale_document_count: int = await self.db[
+                self.settings.mongodb_collection_documents
+            ].count_documents({
+                "$or": [
+                    {"ingested_at": {"$lt": stale_cutoff}},
+                    {
+                        "ingested_at": {"$exists": False},
+                        "created_at": {"$lt": stale_cutoff},
+                    },
+                ]
+            })
+
+            return {
+                "total_documents": total_documents,
+                "total_chunks": total_chunks,
+                "avg_chunks_per_doc": avg_chunks_per_doc,
+                "embedding_coverage": embedding_coverage,
+                "last_ingestion": last_ingestion,
+                "stale_document_count": stale_document_count,
+                "stale_threshold_days": stale_threshold_days,
+            }
+        except OperationFailure as e:
+            logger.exception(
+                "mongodb_operation_failed",
+                extra={"operation": "get_kb_health", "code": e.code},
+            )
+            raise
+
+    async def get_system_metrics(self) -> Dict[str, Any]:
+        """
+        Get system performance metrics.
+
+        Computes query counts from Q&A pairs and returns placeholders
+        for metrics that require dedicated request logging.
+
+        Returns:
+            Dictionary with system metrics
+
+        Raises:
+            ConnectionFailure: If unable to connect to MongoDB
+            OperationFailure: If MongoDB operation fails
+        """
+        await self.initialize()
+        assert self.db is not None, "Database not initialized"
+
+        now = datetime.utcnow()
+        day_ago = now - timedelta(hours=24)
+        week_ago = now - timedelta(days=7)
+
+        try:
+            total_queries_24h: int = await self.db[
+                self.settings.mongodb_collection_qa_pairs
+            ].count_documents({"created_at": {"$gte": day_ago}})
+
+            total_queries_7d: int = await self.db[
+                self.settings.mongodb_collection_qa_pairs
+            ].count_documents({"created_at": {"$gte": week_ago}})
+
+            uptime_seconds = int(time.time() - _APP_START_TIME)
+
+            return {
+                "avg_response_time_ms": 0,
+                "avg_search_time_ms": 0,
+                "total_queries_24h": total_queries_24h,
+                "total_queries_7d": total_queries_7d,
+                "error_rate_24h": 0.0,
+                "uptime_seconds": uptime_seconds,
+            }
+        except OperationFailure as e:
+            logger.exception(
+                "mongodb_operation_failed",
+                extra={"operation": "get_system_metrics", "code": e.code},
             )
             raise

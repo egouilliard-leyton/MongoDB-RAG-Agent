@@ -5,6 +5,7 @@ import { ProjectProvider } from './contexts/ProjectContext';
 import { IngestionProvider } from './contexts/IngestionContext';
 import { DocumentProvider } from './contexts/DocumentContext';
 import { DashboardProvider } from './contexts/DashboardContext';
+import { SettingsProvider } from './contexts/SettingsContext';
 import { Layout } from './components/Layout';
 import { QuestionInput } from './components/QuestionInput';
 import { QABlockList } from './components/QABlockList';
@@ -13,12 +14,13 @@ import { DocumentList } from './components/DocumentList';
 import { IngestionDashboard } from './components/IngestionDashboard';
 import { IngestionResult } from './components/IngestionResult';
 import { Dashboard } from './pages/Dashboard';
+import { SettingsPage } from './pages/SettingsPage';
 
 // =============================================================================
 // Types
 // =============================================================================
 
-type AppView = 'qa' | 'documents' | 'ingestion' | 'dashboard';
+type AppView = 'qa' | 'documents' | 'ingestion' | 'dashboard' | 'settings';
 
 // =============================================================================
 // Main App
@@ -34,27 +36,31 @@ function App() {
           <IngestionProvider>
             <DocumentProvider>
               <DashboardProvider>
-                <Layout
-                  currentView={currentView}
-                  onViewChange={setCurrentView}
-                >
-                  {currentView === 'qa' && (
-                    <div className="space-y-6">
-                      <QuestionInput />
-                      <QABlockList />
-                    </div>
-                  )}
+                <SettingsProvider>
+                  <Layout
+                    currentView={currentView}
+                    onViewChange={setCurrentView}
+                  >
+                    {currentView === 'qa' && (
+                      <div className="space-y-6">
+                        <QuestionInput />
+                        <QABlockList />
+                      </div>
+                    )}
 
-                  {currentView === 'documents' && (
-                    <DocumentsPage onNavigateToIngestion={() => setCurrentView('ingestion')} />
-                  )}
+                    {currentView === 'documents' && (
+                      <DocumentsPage onNavigateToIngestion={() => setCurrentView('ingestion')} />
+                    )}
 
-                  {currentView === 'ingestion' && (
-                    <IngestionPage onNavigateToDocuments={() => setCurrentView('documents')} />
-                  )}
+                    {currentView === 'ingestion' && (
+                      <IngestionPage onNavigateToDocuments={() => setCurrentView('documents')} />
+                    )}
 
-                  {currentView === 'dashboard' && <Dashboard />}
-                </Layout>
+                    {currentView === 'dashboard' && <Dashboard />}
+
+                    {currentView === 'settings' && <SettingsPage />}
+                  </Layout>
+                </SettingsProvider>
               </DashboardProvider>
             </DocumentProvider>
           </IngestionProvider>

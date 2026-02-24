@@ -335,6 +335,9 @@ class ProjectCreateRequest(BaseModel):
     industry: Optional[str] = Field(
         default=None, max_length=100, description="Industry classification"
     )
+    workflow_template_id: Optional[str] = Field(
+        default=None, description="Workflow template ID to use for this project"
+    )
 
 
 class ProjectStage(BaseModel):

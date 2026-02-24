@@ -1,7 +1,7 @@
 """Dashboard API endpoints for analytics and statistics."""
 
 import logging
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, Literal, Optional
 
 from fastapi import APIRouter, Query
 
@@ -188,5 +188,108 @@ async def get_quality_metrics() -> Dict[str, Any]:
             "quality_metrics": quality_metrics,
             "outcome_distribution": outcome_distribution
         }
+    finally:
+        await svc.cleanup()
+
+
+@router.get("/stage-funnel")
+async def get_stage_funnel(
+    workflow_id: Optional[str] = Query(
+        default=None,
+        description="Filter by workflow template ID"
+    )
+) -> Dict[str, Any]:
+    """
+    Get stage distribution across active projects as a funnel.
+
+    Returns the number and percentage of projects in each workflow stage,
+    enriched with label and color from the default workflow template.
+
+    Args:
+        workflow_id: Optional workflow template ID to filter projects
+
+    Returns:
+        Dictionary with funnel items and total project count
+    """
+    settings = load_settings()
+    svc = AnalyticsService(settings)
+    await svc.initialize()
+    try:
+        return await svc.get_stage_funnel(workflow_id=workflow_id)
+    finally:
+        await svc.cleanup()
+
+
+@router.get("/quality-trend")
+async def get_quality_trend(
+    days: int = Query(
+        default=30,
+        ge=1,
+        le=365,
+        description="Number of days to look back"
+    ),
+    granularity: Literal["day", "week", "month"] = Query(
+        default="day",
+        description="Time bucket granularity"
+    )
+) -> Dict[str, Any]:
+    """
+    Get answer quality trend over time.
+
+    Returns good/bad rating counts and ratios aggregated by time bucket
+    over the specified period.
+
+    Args:
+        days: Number of days to look back (default: 30, max: 365)
+        granularity: Time bucket size - "day", "week", or "month"
+
+    Returns:
+        Dictionary with trend data points, period, and granularity
+    """
+    settings = load_settings()
+    svc = AnalyticsService(settings)
+    await svc.initialize()
+    try:
+        return await svc.get_quality_trend(days=days, granularity=granularity)
+    finally:
+        await svc.cleanup()
+
+
+@router.get("/kb-health")
+async def get_kb_health() -> Dict[str, Any]:
+    """
+    Get knowledge base health metrics.
+
+    Returns document and chunk counts, embedding coverage, last ingestion
+    timestamp, and stale document count.
+
+    Returns:
+        Dictionary with KB health metrics
+    """
+    settings = load_settings()
+    svc = AnalyticsService(settings)
+    await svc.initialize()
+    try:
+        return await svc.get_kb_health()
+    finally:
+        await svc.cleanup()
+
+
+@router.get("/system-metrics")
+async def get_system_metrics() -> Dict[str, Any]:
+    """
+    Get system performance metrics.
+
+    Returns query counts and placeholder metrics for response times
+    and error rates.
+
+    Returns:
+        Dictionary with system performance metrics
+    """
+    settings = load_settings()
+    svc = AnalyticsService(settings)
+    await svc.initialize()
+    try:
+        return await svc.get_system_metrics()
     finally:
         await svc.cleanup()

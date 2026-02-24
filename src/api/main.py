@@ -9,10 +9,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from src.api.logging_config import setup_logging
 setup_logging()
 
-from src.api.routes import sessions, qa_pairs, questions, export, admin, projects, documents, ingestion, system, tax_offices, regions, industries, dashboard
-from src.api.middleware import error_handler_middleware, request_logging_middleware
-from src.services.background_tasks import BackgroundTaskScheduler
-from src.settings import load_settings
+from src.api.routes import sessions, qa_pairs, questions, export, admin, projects, documents, ingestion, system, tax_offices, regions, industries, dashboard, settings, workflows  # noqa: E402
+from src.api.middleware import error_handler_middleware, request_logging_middleware  # noqa: E402
+from src.services.background_tasks import BackgroundTaskScheduler  # noqa: E402
+from src.settings import load_settings  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +27,24 @@ async def lifespan(app: FastAPI):
     
     # Startup
     try:
-        settings = load_settings()
-        scheduler = BackgroundTaskScheduler(settings)
+        settings_obj = load_settings()
+        scheduler = BackgroundTaskScheduler(settings_obj)
         await scheduler.start()
         logger.info("Application started, background tasks initialized")
+
+        # Seed default workflow templates for all types if not exists
+        try:
+            from src.services.workflow_service import WorkflowService
+            wf_service = WorkflowService(settings_obj)
+            await wf_service.initialize()
+            try:
+                for wf_type in ("project", "qa_session", "qa_pair", "agentic"):
+                    await wf_service.seed_default_for_type(wf_type)
+                logger.info("All default workflow templates seeded")
+            finally:
+                await wf_service.cleanup()
+        except Exception as e:
+            logger.warning(f"Could not seed default workflows: {e}")
     except Exception as e:
         logger.exception(f"Error starting background tasks: {e}")
     
@@ -82,6 +96,8 @@ app.include_router(tax_offices.router)
 app.include_router(regions.router)
 app.include_router(industries.router)
 app.include_router(dashboard.router)
+app.include_router(settings.router)
+app.include_router(workflows.router)
 
 
 @app.get("/health")

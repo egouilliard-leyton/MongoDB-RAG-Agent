@@ -141,6 +141,10 @@ async def update_qa_pair_rating(qa_pair_id: str, request: QAPairRatingUpdateRequ
             "message": "Q&A pair rating updated successfully",
             "promoted_to_exemplar": promoted_to_exemplar
         }
+    except ValueError as e:
+        if "not found" in str(e).lower():
+            raise NotFoundError("Q&A pair", qa_pair_id)
+        raise
     finally:
         await qa_storage.cleanup()
         await exemplar_service.cleanup()

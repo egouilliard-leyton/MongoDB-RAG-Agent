@@ -19,7 +19,7 @@ export const QABlock: React.FC<QABlockProps> = ({ qaPair }) => {
   const [isRatingSaving, setIsRatingSaving] = useState(false);
   const [showReview, setShowReview] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const saveTimeoutRef = useRef<NodeJS.Timeout>();
+  const saveTimeoutRef = useRef<ReturnType<typeof setTimeout>>();
 
   const isSenior = userRole === 'senior';
 

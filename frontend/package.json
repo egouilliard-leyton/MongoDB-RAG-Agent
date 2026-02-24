@@ -7,15 +7,21 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0"
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "test:e2e:headed": "playwright test --headed"
   },
   "dependencies": {
+    "axios": "^1.7.0",
+    "date-fns": "^3.6.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
-    "axios": "^1.7.0",
-    "date-fns": "^3.6.0"
+    "react-is": "^19.2.4",
+    "recharts": "^3.7.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.58.2",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
@@ -31,4 +37,3 @@
     "vite": "^5.4.0"
   }
 }
-

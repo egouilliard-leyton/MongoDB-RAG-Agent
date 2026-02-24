@@ -287,10 +287,13 @@ class QAStorageService:
             if rated_by is not None:
                 set_doc["rated_by"] = rated_by
 
-        await self.db[self.settings.mongodb_collection_qa_pairs].update_one(
+        result = await self.db[self.settings.mongodb_collection_qa_pairs].update_one(
             {"_id": ObjectId(qa_pair_id)},
             {"$set": set_doc}
         )
+
+        if result.matched_count == 0:
+            raise ValueError(f"Q&A pair not found: {qa_pair_id}")
 
         logger.info(f"Updated Q&A pair rating: {qa_pair_id} -> {rating_good}")
 

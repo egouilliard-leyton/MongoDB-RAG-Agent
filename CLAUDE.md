@@ -27,20 +27,29 @@ Agentic RAG system combining MongoDB Atlas Vector Search with Pydantic AI for in
 
 **Architecture:**
 
+**Production code lives in `src/` — `examples/` is legacy PostgreSQL/pgvector CLI code.**
+
 ```
-examples/
-├── agent.py           # Pydantic AI agent with StateDeps
-├── cli.py             # Rich-based conversational CLI
-├── dependencies.py    # MongoDB client, OpenAI client injection
-├── providers.py       # LLM/embedding provider configs
-├── settings.py        # Pydantic Settings (env variables)
-├── tools.py           # Search tools (semantic, hybrid)
-├── prompts.py         # System prompts
-└── ingestion/
-    ├── chunker.py     # Docling HybridChunker wrapper
-    ├── embedder.py    # Batch embedding generation
-    └── ingest.py      # Multi-format document pipeline
+src/
+├── agent.py, tools.py, dependencies.py, providers.py, prompts.py, settings.py
+├── api/
+│   ├── main.py        # FastAPI app, lifespan, middleware, router inclusion
+│   ├── models.py      # Shared Pydantic request/response models
+│   └── routes/        # One file per feature: questions, sessions, qa_pairs,
+│                      # documents, projects, ingestion, export, dashboard,
+│                      # settings, workflows, system, admin, tax_offices, regions, industries
+├── services/          # Business logic: QAStorageService, ProjectStorageService,
+│                      # SettingsService, WorkflowService, AnalyticsService, ExportService, ...
+├── models/            # Feature-specific Pydantic models: settings_models.py, workflow_models.py
+└── ingestion/         # chunker.py, embedder.py, ingest.py, metadata_extractor.py
 ```
+
+**MongoDB Collections (all configured in `src/settings.py`):**
+- `documents`, `chunks` — core RAG storage
+- `qa_sessions`, `qa_pairs` — session management
+- `projects`, `tax_offices`, `regions`, `industries` — reference data
+- `app_settings` — global settings + version history
+- `workflow_templates` — stage workflow templates
 
 ---
 
@@ -108,6 +117,21 @@ uv run python -m examples.cli
 - `info` - Show system configuration
 - `clear` - Clear screen
 - `exit` / `quit` / `q` - Exit agent
+
+**Run src/ layer (production):**
+```bash
+# Backend — ALWAYS use --reload so code changes are picked up immediately
+uv run uvicorn src.api.main:app --host 0.0.0.0 --port 8000 --reload
+
+# Frontend
+cd frontend && npm run dev   # http://localhost:5173
+
+# API E2E tests (requires running backend on :8000)
+uv run pytest tests/e2e/ -v -m e2e
+
+# Playwright browser tests (requires backend :8000 + frontend :5173)
+cd frontend && npm run test:e2e
+```
 
 ---
 
@@ -349,6 +373,72 @@ pipeline = [
     }},
     {"$unwind": "$document_info"}
 ]
+```
+
+### 6. MongoDB Atlas TLSV1_ALERT_INTERNAL_ERROR
+```python
+# This error on port 27017 means your IP is NOT whitelisted in Atlas
+# It is NOT an SSL version issue
+# Fix: Atlas UI → Network Access → IP Access List → Add IP address
+# Confirm IP: curl ifconfig.me
+```
+
+### 7. FastAPI Route Ordering (Static before Parameterized)
+```python
+# ❌ WRONG - FastAPI treats "seed-default" as a workflow_id value
+router.get("/{workflow_id}")
+router.post("/seed-default")
+
+# ✅ CORRECT - Register static paths before parameterized paths
+router.post("/seed-default")
+router.get("/{workflow_id}")
+```
+
+### 8. Variable Shadowing in Lifespan Functions
+```python
+# ❌ WRONG - shadows the imported 'settings' module/function
+async def lifespan(app):
+    settings = load_settings()
+
+# ✅ CORRECT - use a distinct name
+async def lifespan(app):
+    settings_obj = load_settings()
+```
+
+### 9. ruff E402 in main.py (intentional, suppress)
+```python
+# setup_logging() MUST be called before other imports — suppress E402 explicitly
+from src.api.logging_config import setup_logging
+setup_logging()
+from src.api.routes import ...  # noqa: E402
+```
+
+### 10. pytest-asyncio Mode
+```bash
+# Async tests require explicit marker OR auto mode:
+uv run pytest tests/ --asyncio-mode=auto  # recommended
+# OR add @pytest.mark.asyncio to every async test function
+```
+
+### 11. pytest-asyncio Fixture Scoping in E2E Tests
+```python
+# ❌ WRONG - session-scoped async fixture causes "Event loop is closed" teardown errors
+@pytest_asyncio.fixture(scope="session")
+async def api_client(): ...
+
+# ❌ WRONG - asyncio_default_fixture_loop_scope="session" in pyproject.toml silently
+#   treats each test FILE as a separate pytest session → breaks cross-file shared state
+#   (e2e_state dict appears empty in later test files)
+
+# ✅ CORRECT - function-scoped async fixture + session-scoped SYNC fixture for shared state
+@pytest_asyncio.fixture(scope="function")
+async def api_client() -> httpx.AsyncClient:
+    async with httpx.AsyncClient(...) as client:
+        yield client
+
+@pytest.fixture(scope="session")  # sync, not async
+def e2e_state() -> dict:
+    return {"qa_pair_ids": []}
 ```
 
 ---

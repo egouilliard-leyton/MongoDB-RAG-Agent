@@ -59,6 +59,7 @@ class ProjectStorageService:
         tax_office_id: Optional[int] = None,
         region: Optional[str] = None,
         industry: Optional[str] = None,
+        workflow_template_id: Optional[str] = None,
     ) -> str:
         """
         Create a new project.
@@ -71,6 +72,7 @@ class ProjectStorageService:
             tax_office_id: Optional tax office ID (kodjednostki).
             region: Optional region (voivodeship) name.
             industry: Optional industry classification.
+            workflow_template_id: Optional workflow template ID.
 
         Returns:
             String representation of the created project's ObjectId.
@@ -87,6 +89,7 @@ class ProjectStorageService:
             "tax_office_id": tax_office_id,
             "region": region,
             "industry": industry,
+            "workflow_template_id": workflow_template_id,
             "created_at": now,
             "updated_at": now,
             "stage": {"key": initial_stage, "updated_at": now},

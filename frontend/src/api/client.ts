@@ -39,6 +39,22 @@ import type {
   TaxOfficeDistribution,
   TrendsResponse,
   QualityMetricsResponse,
+  // Settings types
+  SettingsResponse,
+  SettingsUpdateRequest,
+  SettingsVersion,
+  ParameterSuggestion,
+  PromptTestRequest,
+  PromptTestResponse,
+  // Workflow types
+  WorkflowTemplate,
+  WorkflowListItem,
+  WorkflowCreateRequest,
+  // Dashboard extended types
+  StageFunnelResponse,
+  QualityTrendResponse,
+  KBHealthData,
+  SystemMetricsData,
 } from './types';
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
@@ -812,8 +828,25 @@ export const getIndustries = async (): Promise<Industry[]> => {
  */
 export const getDashboardSummary = async (): Promise<DashboardSummary> => {
   return retryRequest(async () => {
-    const response = await apiClient.get<DashboardSummary>('/api/dashboard/summary');
-    return response.data;
+    const response = await apiClient.get('/api/dashboard/summary');
+    const raw = response.data as any;
+    // Transform API response shape to match frontend DashboardSummary interface
+    return {
+      project_count: raw.counts?.projects ?? 0,
+      session_count: raw.counts?.sessions ?? 0,
+      qa_pair_count: raw.counts?.qa_pairs ?? 0,
+      success_rate: (raw.success_rate?.success_rate ?? 0) / 100,
+      qa_quality: {
+        total: raw.quality_metrics?.total_qa_pairs ?? 0,
+        rated: raw.quality_metrics?.rated_count ?? 0,
+        unrated: raw.quality_metrics?.unrated_count ?? 0,
+        good: raw.quality_metrics?.good_count ?? 0,
+        bad: raw.quality_metrics?.bad_count ?? 0,
+        good_ratio: (raw.quality_metrics?.good_ratio ?? 0) / 100,
+        exemplar_count: raw.quality_metrics?.exemplar_count ?? 0,
+      },
+      timestamp: raw.generated_at ?? new Date().toISOString(),
+    } as DashboardSummary;
   });
 };
 
@@ -882,7 +915,176 @@ export const getDashboardTrends = async (
  */
 export const getQualityMetrics = async (): Promise<QualityMetricsResponse> => {
   return retryRequest(async () => {
-    const response = await apiClient.get<QualityMetricsResponse>('/api/dashboard/quality');
+    const response = await apiClient.get('/api/dashboard/quality');
+    const raw = response.data as any;
+    // Transform API response shape to match frontend QualityMetricsResponse interface
+    const qm = raw.quality_metrics ?? {};
+    const od = raw.outcome_distribution ?? {};
+    return {
+      quality_metrics: {
+        total: qm.total_qa_pairs ?? 0,
+        rated: qm.rated_count ?? 0,
+        unrated: qm.unrated_count ?? 0,
+        good: qm.good_count ?? 0,
+        bad: qm.bad_count ?? 0,
+        good_ratio: (qm.good_ratio ?? 0) / 100,
+        exemplar_count: qm.exemplar_count ?? 0,
+      },
+      outcome_distribution: Object.entries(od).map(([name, count]) => ({
+        name,
+        count: count as number,
+        label: name.charAt(0).toUpperCase() + name.slice(1),
+      })),
+    } as QualityMetricsResponse;
+  });
+};
+
+// =============================================================================
+// Settings Endpoints
+// =============================================================================
+
+export const getSettings = async (): Promise<SettingsResponse> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<SettingsResponse>('/api/settings');
+    return response.data;
+  });
+};
+
+export const updateSettings = async (data: SettingsUpdateRequest): Promise<SettingsResponse> => {
+  return retryRequest(async () => {
+    const response = await apiClient.put<SettingsResponse>('/api/settings', data);
+    return response.data;
+  });
+};
+
+export const getSettingsHistory = async (limit?: number): Promise<SettingsVersion[]> => {
+  return retryRequest(async () => {
+    const params = limit !== undefined ? { limit } : undefined;
+    const response = await apiClient.get<SettingsVersion[]>('/api/settings/history', { params });
+    return response.data;
+  });
+};
+
+export const restoreSettings = async (version: number): Promise<SettingsResponse> => {
+  return retryRequest(async () => {
+    const response = await apiClient.post<SettingsResponse>(`/api/settings/restore/${version}`);
+    return response.data;
+  });
+};
+
+export const testPrompt = async (data: PromptTestRequest): Promise<PromptTestResponse> => {
+  return retryRequest(async () => {
+    const response = await apiClient.post<PromptTestResponse>('/api/settings/prompt-test', data);
+    return response.data;
+  });
+};
+
+export const getParameterSuggestions = async (): Promise<ParameterSuggestion[]> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<ParameterSuggestion[]>('/api/settings/suggestions');
+    return response.data;
+  });
+};
+
+export const applySuggestion = async (suggestionId: string): Promise<SettingsResponse> => {
+  return retryRequest(async () => {
+    const response = await apiClient.post<SettingsResponse>(
+      `/api/settings/suggestions/${suggestionId}/apply`
+    );
+    return response.data;
+  });
+};
+
+// =============================================================================
+// Workflow Endpoints
+// =============================================================================
+
+export const listWorkflows = async (): Promise<WorkflowListItem[]> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<WorkflowListItem[]>('/api/workflows');
+    return response.data;
+  });
+};
+
+export const createWorkflow = async (data: WorkflowCreateRequest): Promise<WorkflowTemplate> => {
+  return retryRequest(async () => {
+    const response = await apiClient.post<WorkflowTemplate>('/api/workflows', data);
+    return response.data;
+  });
+};
+
+export const getWorkflow = async (id: string): Promise<WorkflowTemplate> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<WorkflowTemplate>(`/api/workflows/${id}`);
+    return response.data;
+  });
+};
+
+export const updateWorkflow = async (id: string, data: WorkflowCreateRequest): Promise<WorkflowTemplate> => {
+  return retryRequest(async () => {
+    const response = await apiClient.put<WorkflowTemplate>(`/api/workflows/${id}`, data);
+    return response.data;
+  });
+};
+
+export const deleteWorkflow = async (id: string): Promise<void> => {
+  return retryRequest(async () => {
+    await apiClient.delete(`/api/workflows/${id}`);
+  });
+};
+
+export const duplicateWorkflow = async (id: string, name?: string): Promise<WorkflowTemplate> => {
+  return retryRequest(async () => {
+    const data = name ? { name } : undefined;
+    const response = await apiClient.post<WorkflowTemplate>(`/api/workflows/${id}/duplicate`, data);
+    return response.data;
+  });
+};
+
+export const seedDefaultWorkflow = async (): Promise<WorkflowTemplate> => {
+  return retryRequest(async () => {
+    const response = await apiClient.post<WorkflowTemplate>('/api/workflows/seed-default');
+    return response.data;
+  });
+};
+
+// =============================================================================
+// Dashboard Extended Endpoints (Settings/Workflow features)
+// =============================================================================
+
+export const getStageFunnel = async (workflowId?: string): Promise<StageFunnelResponse> => {
+  return retryRequest(async () => {
+    const params = workflowId ? { workflow_id: workflowId } : undefined;
+    const response = await apiClient.get<StageFunnelResponse>('/api/dashboard/stage-funnel', { params });
+    return response.data;
+  });
+};
+
+export const getQualityTrend = async (
+  days?: number,
+  granularity?: 'day' | 'week' | 'month'
+): Promise<QualityTrendResponse> => {
+  return retryRequest(async () => {
+    const params: Record<string, string | number> = {};
+    if (days !== undefined) params.days = days;
+    if (granularity !== undefined) params.granularity = granularity;
+    const response = await apiClient.get<QualityTrendResponse>('/api/dashboard/quality-trend', {
+      params: Object.keys(params).length > 0 ? params : undefined,
+    });
+    return response.data;
+  });
+};
+
+export const getKBHealth = async (): Promise<KBHealthData> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<KBHealthData>('/api/dashboard/kb-health');
+    return response.data;
+  });
+};
+
+export const getSystemMetrics = async (): Promise<SystemMetricsData> => {
+  return retryRequest(async () => {
+    const response = await apiClient.get<SystemMetricsData>('/api/dashboard/system-metrics');
     return response.data;
   });
 };

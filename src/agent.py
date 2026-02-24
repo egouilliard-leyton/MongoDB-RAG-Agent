@@ -17,7 +17,7 @@ from src.dependencies import AgentDependencies
 from src.prompts import MAIN_SYSTEM_PROMPT
 from src.tools import semantic_search, hybrid_search, text_search, SearchResult, search_qa_history, extract_questions
 from src.reasoning import analyze_question_complexity, merge_search_results, evaluate_results_sufficiency
-from src.settings import load_settings
+from src.settings import load_settings, load_runtime_settings
 
 logger = logging.getLogger(__name__)
 
@@ -775,11 +775,17 @@ async def process_question_batch_standalone(
         settings = load_settings()
         qa_storage = QAStorageService(settings)
         await qa_storage.initialize()
-        
+
         # Validate document existence before processing
         agent_deps = AgentDependencies()
         await agent_deps.initialize()
-        
+
+        # Load runtime settings from MongoDB (with env fallback)
+        runtime_settings = await load_runtime_settings(agent_deps.db)
+        runtime_match_count = runtime_settings.get("default_match_count", settings.default_match_count)
+        runtime_enable_history = runtime_settings.get("enable_qa_history_search", True)
+        runtime_qa_history_mc = runtime_settings.get("qa_history_match_count", 3)
+
         try:
             doc_count = await agent_deps.db[settings.mongodb_collection_documents].count_documents({})
             chunk_count = await agent_deps.db[settings.mongodb_collection_chunks].count_documents({})
@@ -917,17 +923,18 @@ async def process_question_batch_standalone(
             
             deps_ctx = DepsWrapper(agent_deps)
             
-            # Use hybrid search for document retrieval
+            # Use hybrid search for document retrieval (runtime match_count)
+            search_match_count = min(runtime_match_count, 10)  # cap per-question search
             search_start_time = time.time()
             logger.info(
                 f"Searching documents for question {idx + 1}: {question[:100]}...",
-                extra={'question_index': idx, 'match_count': 5}
+                extra={'question_index': idx, 'match_count': search_match_count}
             )
             try:
                 doc_results = await hybrid_search(
                     ctx=deps_ctx,
                     query=question,
-                    match_count=5,
+                    match_count=search_match_count,
                     project_id=session_project_id,
                 )
                 search_time = time.time() - search_start_time
@@ -985,9 +992,9 @@ async def process_question_batch_standalone(
             
             await agent_deps.cleanup()
             
-            # 2. Search Q&A history if enabled
+            # 2. Search Q&A history if enabled (respects runtime setting)
             qa_history_results = []
-            if include_history:
+            if include_history and runtime_enable_history:
                 qa_history_start_time = time.time()
                 logger.debug(
                     f"Searching Q&A history for question {idx + 1}",
@@ -1001,7 +1008,7 @@ async def process_question_batch_standalone(
                     qa_history_results = await search_qa_history(
                         ctx=deps_ctx,
                         query=question,
-                        match_count=3,
+                        match_count=runtime_qa_history_mc,
                         outcome_status="successful",
                         user_role=user_role
                     )
@@ -1035,6 +1042,8 @@ async def process_question_batch_standalone(
                         },
                         exc_info=True
                     )
+            elif not runtime_enable_history:
+                logger.debug(f"Q&A history search skipped (disabled in runtime settings)", extra={'question_index': idx})
             else:
                 logger.debug(f"Q&A history search skipped (include_history=False)", extra={'question_index': idx})
             

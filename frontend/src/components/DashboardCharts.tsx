@@ -1,19 +1,19 @@
 import React from 'react';
-
-// Stub types for recharts until module is installed
-const BarChart: any = () => null;
-const Bar: any = () => null;
-const LineChart: any = () => null;
-const Line: any = () => null;
-const PieChart: any = () => null;
-const Pie: any = () => null;
-const Cell: any = () => null;
-const XAxis: any = () => null;
-const YAxis: any = () => null;
-const CartesianGrid: any = () => null;
-const Tooltip: any = () => null;
-const Legend: any = () => null;
-const ResponsiveContainer: any = ({ children }: { children: React.ReactNode }) => <div>{children}</div>;
+import {
+  BarChart,
+  Bar,
+  LineChart,
+  Line,
+  PieChart,
+  Pie,
+  Cell,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+  ResponsiveContainer,
+} from 'recharts';
 import type {
   TrendDataPoint,
   TrendsResponse,
@@ -281,7 +281,7 @@ export const IndustryDistributionChart: React.FC<IndustryDistributionChartProps>
               borderRadius: '0.5rem',
               fontSize: '12px',
             }}
-            formatter={(value: number) => [value, 'Projects']}
+            formatter={(value: any) => [value, 'Projects']}
           />
           <Bar dataKey="count" name="Projects" radius={[0, 4, 4, 0]}>
             {chartData.map((_, index) => (
@@ -377,7 +377,7 @@ export const TrendsChart: React.FC<TrendsChartProps> = ({
               borderRadius: '0.5rem',
               fontSize: '12px',
             }}
-            labelFormatter={(label: any) => formatDate(label as string)}
+            labelFormatter={(label) => formatDate(label as string)}
           />
           <Legend wrapperStyle={{ fontSize: '12px' }} />
           {showProjects && (
@@ -467,14 +467,7 @@ export const QualityMetricsChart: React.FC<QualityMetricsChartProps> = ({
     innerRadius,
     outerRadius,
     percent,
-  }: {
-    cx: number;
-    cy: number;
-    midAngle: number;
-    innerRadius: number;
-    outerRadius: number;
-    percent: number;
-  }) => {
+  }: any) => {
     const RADIAN = Math.PI / 180;
     const radius = innerRadius + (outerRadius - innerRadius) * 0.5;
     const x = cx + radius * Math.cos(-midAngle * RADIAN);
@@ -517,7 +510,7 @@ export const QualityMetricsChart: React.FC<QualityMetricsChartProps> = ({
                 borderRadius: '0.5rem',
                 fontSize: '12px',
               }}
-              formatter={(value: number) => [value, 'Q&A Pairs']}
+              formatter={(value: any) => [value, 'Q&A Pairs']}
             />
             <Bar dataKey="value" name="Count" radius={[4, 4, 0, 0]}>
               {ratingData.map((entry, index) => (
@@ -563,7 +556,7 @@ export const QualityMetricsChart: React.FC<QualityMetricsChartProps> = ({
                     borderRadius: '0.5rem',
                     fontSize: '12px',
                   }}
-                  formatter={(value: number, name: string) => [value, name]}
+                  formatter={(value: any, name: any) => [value, name]}
                 />
               </PieChart>
             </ResponsiveContainer>
@@ -608,7 +601,7 @@ export const QualityMetricsChart: React.FC<QualityMetricsChartProps> = ({
                     borderRadius: '0.5rem',
                     fontSize: '12px',
                   }}
-                  formatter={(value: number, name: string) => [value, name]}
+                  formatter={(value: any, name: any) => [value, name]}
                 />
               </PieChart>
             </ResponsiveContainer>

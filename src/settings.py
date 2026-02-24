@@ -3,13 +3,13 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field, field_validator
 from dotenv import load_dotenv
-from typing import Any, Optional
-import os
+from typing import Any, Dict, Optional
+import logging
 
 # Try to load environment variables from .env file, but don't fail if inaccessible
 try:
     load_dotenv()
-except (PermissionError, OSError) as e:
+except (PermissionError, OSError):
     # .env file may be locked or inaccessible, continue with environment variables only
     pass
 
@@ -56,6 +56,14 @@ class Settings(BaseSettings):
 
     mongodb_collection_projects: str = Field(
         default="projects", description="Collection for projects"
+    )
+
+    mongodb_collection_app_settings: str = Field(
+        default="app_settings", description="Collection for application settings and version history"
+    )
+
+    mongodb_collection_workflow_templates: str = Field(
+        default="workflow_templates", description="Collection for workflow templates"
     )
 
     qa_auto_success_days: int = Field(
@@ -208,3 +216,61 @@ def load_settings() -> Settings:
         if "embedding_api_key" in str(e).lower():
             error_msg += "\nMake sure to set EMBEDDING_API_KEY in your .env file or environment"
         raise ValueError(error_msg) from e
+
+
+_logger = logging.getLogger(__name__)
+
+
+async def load_runtime_settings(db: Any) -> Dict[str, Any]:
+    """
+    Load runtime settings from MongoDB, merged over env-based defaults.
+
+    Falls back to env-only settings if MongoDB is unavailable.
+
+    Args:
+        db: Motor database instance.
+
+    Returns:
+        Dictionary of resolved settings values.
+    """
+    env_settings = load_settings()
+
+    # Build base dict from env
+    base: Dict[str, Any] = {
+        "default_match_count": env_settings.default_match_count,
+        "max_match_count": env_settings.max_match_count,
+        "enable_question_decomposition": env_settings.enable_question_decomposition,
+        "enable_iterative_refinement": env_settings.enable_iterative_refinement,
+        "enable_qa_history_search": True,
+        "rrf_k_constant": 60,
+        "qa_history_match_count": 3,
+        "llm_model": env_settings.llm_model,
+        "llm_base_url": env_settings.llm_base_url or "https://openrouter.ai/api/v1",
+        "embedding_model": env_settings.embedding_model,
+        "show_full_citations": env_settings.show_full_citations,
+    }
+
+    try:
+        from src.services.settings_service import SettingsService
+
+        svc = SettingsService(env_settings)
+        svc.db = db
+        # Reuse the existing db connection — skip initialize/cleanup
+        svc.mongo_client = True  # type: ignore[assignment]  # mark as "connected"
+
+        doc = await svc.get_current()
+
+        # Merge MongoDB values over base
+        for key in base:
+            if key in doc and doc[key] is not None:
+                base[key] = doc[key]
+
+        # Include prompt-related fields
+        for key in ("main_system_prompt", "follow_up_context_prompt", "qa_history_prompt", "stage_defaults"):
+            if key in doc:
+                base[key] = doc[key]
+
+    except Exception as e:
+        _logger.warning(f"Failed to load runtime settings from MongoDB: {e}. Using env defaults.")
+
+    return base

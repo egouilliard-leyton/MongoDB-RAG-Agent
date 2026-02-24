@@ -42,6 +42,7 @@ async def create_project(request: ProjectCreateRequest):
             tax_office_id=request.tax_office_id,
             region=request.region,
             industry=request.industry,
+            workflow_template_id=request.workflow_template_id,
         )
         project = await svc.get_project(project_id)
         return ProjectResponse(**project)

@@ -3,12 +3,18 @@ Project stage state machine.
 
 This module is intentionally small and self-contained so the stage logic has a
 single source of truth shared by API + UI.
+
+Stages can be loaded from a MongoDB workflow template via `get_stage_definitions()`,
+with `FALLBACK_STAGES` used when MongoDB is unavailable.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -18,7 +24,7 @@ class Stage:
     is_terminal: bool = False
 
 
-# Stage catalog (key -> Stage)
+# Stage catalog (key -> Stage) — used as hardcoded fallback
 STAGES: Dict[str, Stage] = {
     "prep_docs": Stage("prep_docs", "Prepare documents"),
     "submit_first_instance": Stage("submit_first_instance", "Submit (1st instance)"),
@@ -112,5 +118,50 @@ def validate_transition(from_stage: str, event: str) -> Tuple[bool, Optional[str
     if not is_valid_stage_key(to_stage):
         return False, None, f"Transition resolved to unknown stage '{to_stage}'"
     return True, to_stage, None
+
+
+# Alias for callers that need the hardcoded fallback explicitly
+FALLBACK_STAGES: Dict[str, str] = {key: stage.label for key, stage in STAGES.items()}
+
+
+async def get_stage_definitions(
+    db: Any, workflow_id: Optional[str] = None
+) -> Dict[str, str]:
+    """
+    Get stage definitions from a MongoDB workflow template.
+
+    Falls back to FALLBACK_STAGES if MongoDB is unavailable or the workflow is
+    not found.
+
+    Args:
+        db: Motor database instance.
+        workflow_id: Specific workflow template ID. If None, uses the default template.
+
+    Returns:
+        Dict mapping stage_id -> stage_label.
+    """
+    try:
+        from bson import ObjectId
+
+        collection = db["workflow_templates"]
+
+        if workflow_id:
+            doc = await collection.find_one({"_id": ObjectId(workflow_id)})
+        else:
+            doc = await collection.find_one({"is_default": True})
+
+        if doc and doc.get("stages"):
+            return {
+                stage["id"]: stage["label"]
+                for stage in doc["stages"]
+                if "id" in stage and "label" in stage
+            }
+    except Exception as exc:
+        logger.warning(
+            f"Failed to load stage definitions from MongoDB: {exc}. "
+            "Falling back to hardcoded stages."
+        )
+
+    return FALLBACK_STAGES
 
 

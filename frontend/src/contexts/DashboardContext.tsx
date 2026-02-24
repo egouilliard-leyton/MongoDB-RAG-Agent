@@ -6,6 +6,10 @@ import type {
   TaxOfficeDistribution,
   TrendsResponse,
   QualityMetricsResponse,
+  StageFunnelResponse,
+  QualityTrendResponse,
+  KBHealthData,
+  SystemMetricsData,
 } from '../api/types';
 import * as api from '../api/client';
 
@@ -16,7 +20,12 @@ interface DashboardContextType {
   taxOfficeDistribution: TaxOfficeDistribution | null;
   trends: TrendsResponse | null;
   qualityMetrics: QualityMetricsResponse | null;
+  stageFunnel: StageFunnelResponse | null;
+  qualityTrends: QualityTrendResponse | null;
+  kbHealth: KBHealthData | null;
+  systemMetrics: SystemMetricsData | null;
   isLoading: boolean;
+  isLoadingExtended: boolean;
   error: string | null;
   loadSummary: () => Promise<void>;
   loadRegionDistribution: () => Promise<void>;
@@ -24,6 +33,10 @@ interface DashboardContextType {
   loadTaxOfficeDistribution: (limit?: number) => Promise<void>;
   loadTrends: (days?: number, granularity?: 'day' | 'week' | 'month') => Promise<void>;
   loadQualityMetrics: () => Promise<void>;
+  loadStageFunnel: () => Promise<void>;
+  loadQualityTrends: (days?: number, granularity?: 'day' | 'week' | 'month') => Promise<void>;
+  loadKBHealth: () => Promise<void>;
+  loadSystemMetrics: () => Promise<void>;
   loadAllData: () => Promise<void>;
   clearError: () => void;
 }
@@ -47,7 +60,12 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
   const [taxOfficeDistribution, setTaxOfficeDistribution] = useState<TaxOfficeDistribution | null>(null);
   const [trends, setTrends] = useState<TrendsResponse | null>(null);
   const [qualityMetrics, setQualityMetrics] = useState<QualityMetricsResponse | null>(null);
+  const [stageFunnel, setStageFunnel] = useState<StageFunnelResponse | null>(null);
+  const [qualityTrends, setQualityTrends] = useState<QualityTrendResponse | null>(null);
+  const [kbHealth, setKBHealth] = useState<KBHealthData | null>(null);
+  const [systemMetrics, setSystemMetrics] = useState<SystemMetricsData | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isLoadingExtended, setIsLoadingExtended] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const loadSummary = useCallback(async () => {
@@ -140,18 +158,74 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     }
   }, []);
 
+  const loadStageFunnel = useCallback(async () => {
+    setIsLoadingExtended(true);
+    try {
+      const data = await api.getStageFunnel();
+      setStageFunnel(data);
+    } catch (err) {
+      console.error('Failed to load stage funnel:', err);
+    } finally {
+      setIsLoadingExtended(false);
+    }
+  }, []);
+
+  const loadQualityTrends = useCallback(async (days: number = 30, granularity: 'day' | 'week' | 'month' = 'day') => {
+    setIsLoadingExtended(true);
+    try {
+      const data = await api.getQualityTrend(days, granularity);
+      setQualityTrends(data);
+    } catch (err) {
+      console.error('Failed to load quality trends:', err);
+    } finally {
+      setIsLoadingExtended(false);
+    }
+  }, []);
+
+  const loadKBHealth = useCallback(async () => {
+    setIsLoadingExtended(true);
+    try {
+      const data = await api.getKBHealth();
+      setKBHealth(data);
+    } catch (err) {
+      console.error('Failed to load KB health:', err);
+    } finally {
+      setIsLoadingExtended(false);
+    }
+  }, []);
+
+  const loadSystemMetrics = useCallback(async () => {
+    setIsLoadingExtended(true);
+    try {
+      const data = await api.getSystemMetrics();
+      setSystemMetrics(data);
+    } catch (err) {
+      console.error('Failed to load system metrics:', err);
+    } finally {
+      setIsLoadingExtended(false);
+    }
+  }, []);
+
   const loadAllData = useCallback(async () => {
     setIsLoading(true);
+    setIsLoadingExtended(true);
     setError(null);
     try {
-      // Load all data in parallel
-      const [summaryData, regionData, industryData, taxOfficeData, trendsData, qualityData] = await Promise.all([
+      // Load all data in parallel (both original and extended panels)
+      const [
+        summaryData, regionData, industryData, taxOfficeData, trendsData, qualityData,
+        stageFunnelData, qualityTrendsData, kbHealthData, systemMetricsData,
+      ] = await Promise.all([
         api.getDashboardSummary(),
         api.getRegionDistribution(),
         api.getIndustryDistribution(),
         api.getTaxOfficeDistribution(20),
         api.getDashboardTrends(30, 'day'),
         api.getQualityMetrics(),
+        api.getStageFunnel().catch(() => null),
+        api.getQualityTrend(30, 'day').catch(() => null),
+        api.getKBHealth().catch(() => null),
+        api.getSystemMetrics().catch(() => null),
       ]);
 
       setSummary(summaryData);
@@ -160,12 +234,17 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
       setTaxOfficeDistribution(taxOfficeData);
       setTrends(trendsData);
       setQualityMetrics(qualityData);
+      setStageFunnel(stageFunnelData);
+      setQualityTrends(qualityTrendsData);
+      setKBHealth(kbHealthData);
+      setSystemMetrics(systemMetricsData);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Failed to load dashboard data';
       setError(message);
       throw err;
     } finally {
       setIsLoading(false);
+      setIsLoadingExtended(false);
     }
   }, []);
 
@@ -178,7 +257,12 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     taxOfficeDistribution,
     trends,
     qualityMetrics,
+    stageFunnel,
+    qualityTrends,
+    kbHealth,
+    systemMetrics,
     isLoading,
+    isLoadingExtended,
     error,
     loadSummary,
     loadRegionDistribution,
@@ -186,6 +270,10 @@ export const DashboardProvider: React.FC<DashboardProviderProps> = ({ children }
     loadTaxOfficeDistribution,
     loadTrends,
     loadQualityMetrics,
+    loadStageFunnel,
+    loadQualityTrends,
+    loadKBHealth,
+    loadSystemMetrics,
     loadAllData,
     clearError,
   };

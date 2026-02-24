@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import { useDashboard } from '../contexts/DashboardContext';
 import {
   RegionDistributionChart,
@@ -6,6 +6,10 @@ import {
   TrendsChart,
   QualityMetricsChart,
 } from '../components/DashboardCharts';
+import { StageFunnelChart } from '../components/dashboard/StageFunnelChart';
+import { AnswerQualityTrends } from '../components/dashboard/AnswerQualityTrends';
+import { KBHealthPanel } from '../components/dashboard/KBHealthPanel';
+import { SystemMetricsPanel } from '../components/dashboard/SystemMetricsPanel';
 
 /**
  * Dashboard page component displaying key analytics and metrics.
@@ -19,14 +23,29 @@ export const Dashboard: React.FC = () => {
     industryDistribution,
     trends,
     qualityMetrics,
+    stageFunnel,
+    qualityTrends,
+    kbHealth,
+    systemMetrics,
     isLoading,
+    isLoadingExtended,
     error,
     loadAllData,
+    loadQualityTrends,
+    loadSystemMetrics,
   } = useDashboard();
 
   // Granularity selection for trends chart
   const [trendDays, setTrendDays] = useState<number>(30);
   const [trendGranularity, setTrendGranularity] = useState<'day' | 'week' | 'month'>('day');
+
+  const handleQualityParamsChange = useCallback((days: number, granularity: 'day' | 'week' | 'month') => {
+    loadQualityTrends(days, granularity).catch(console.error);
+  }, [loadQualityTrends]);
+
+  const handleSystemMetricsRefresh = useCallback(() => {
+    loadSystemMetrics().catch(console.error);
+  }, [loadSystemMetrics]);
 
   useEffect(() => {
     loadAllData().catch(console.error);
@@ -327,6 +346,29 @@ export const Dashboard: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Pipeline Status (Stage Funnel) */}
+      <StageFunnelChart data={stageFunnel} isLoading={isLoadingExtended && !stageFunnel} />
+
+      {/* Answer Quality Trends + KB Health (two-column) */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <AnswerQualityTrends
+          data={qualityTrends}
+          isLoading={isLoadingExtended && !qualityTrends}
+          onParamsChange={handleQualityParamsChange}
+        />
+        <KBHealthPanel
+          data={kbHealth}
+          isLoading={isLoadingExtended && !kbHealth}
+        />
+      </div>
+
+      {/* System Metrics */}
+      <SystemMetricsPanel
+        data={systemMetrics}
+        isLoading={isLoadingExtended && !systemMetrics}
+        onRefresh={handleSystemMetricsRefresh}
+      />
 
       {/* Last Updated */}
       {summary?.timestamp && (

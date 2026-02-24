@@ -1,5 +1,10 @@
 """System prompts for MongoDB RAG Agent."""
 
+import logging
+from typing import Any, Optional
+
+_logger = logging.getLogger(__name__)
+
 MAIN_SYSTEM_PROMPT = """You are a helpful assistant with access to a knowledge base that you can search when needed.
 
 ALWAYS Start with Hybrid search
@@ -182,3 +187,114 @@ The following questions and answers from the previous round need improvement:
 
 Use this context to inform your answer generation, but still search the knowledge base for current, accurate information.
 """
+
+
+async def get_main_prompt(db: Any, stage_id: Optional[str] = None) -> str:
+    """
+    Load the main system prompt from MongoDB with stage-specific additive prompt.
+
+    Falls back to the MAIN_SYSTEM_PROMPT constant if MongoDB is unavailable.
+
+    Args:
+        db: Motor database instance.
+        stage_id: Optional stage ID for stage-specific prompt append.
+
+    Returns:
+        Resolved system prompt string.
+    """
+    try:
+        from src.services.settings_service import SettingsService
+        from src.settings import load_settings
+
+        settings = load_settings()
+        svc = SettingsService(settings)
+        svc.db = db
+        svc.mongo_client = True  # type: ignore[assignment]  # reuse existing db
+
+        doc = await svc.get_current()
+
+        segments = [doc.get("main_system_prompt", MAIN_SYSTEM_PROMPT)]
+
+        # Stage defaults additive prompt
+        stage_defaults = doc.get("stage_defaults") or {}
+        if stage_defaults.get("system_prompt_append"):
+            segments.append(stage_defaults["system_prompt_append"])
+
+        # Stage-specific additive prompt (from workflow template)
+        if stage_id:
+            try:
+                wf_collection = db[settings.mongodb_collection_workflow_templates]
+                template = await wf_collection.find_one({"is_default": True})
+                if template:
+                    for stage in template.get("stages", []):
+                        if stage.get("id") == stage_id:
+                            config = stage.get("config", {})
+                            if config.get("system_prompt_append"):
+                                segments.append(config["system_prompt_append"])
+                            break
+            except Exception as e:
+                _logger.warning(f"Failed to load stage-specific prompt for '{stage_id}': {e}")
+
+        return "\n".join(segments)
+
+    except Exception as e:
+        _logger.warning(f"Failed to load main prompt from MongoDB: {e}. Using constant.")
+        return MAIN_SYSTEM_PROMPT
+
+
+async def get_follow_up_prompt(db: Any) -> str:
+    """
+    Load the follow-up context prompt from MongoDB.
+
+    Falls back to the FOLLOW_UP_CONTEXT_PROMPT constant if MongoDB is unavailable.
+
+    Args:
+        db: Motor database instance.
+
+    Returns:
+        Follow-up context prompt template string.
+    """
+    try:
+        from src.services.settings_service import SettingsService
+        from src.settings import load_settings
+
+        settings = load_settings()
+        svc = SettingsService(settings)
+        svc.db = db
+        svc.mongo_client = True  # type: ignore[assignment]
+
+        doc = await svc.get_current()
+        return doc.get("follow_up_context_prompt", FOLLOW_UP_CONTEXT_PROMPT)
+
+    except Exception as e:
+        _logger.warning(f"Failed to load follow-up prompt from MongoDB: {e}. Using constant.")
+        return FOLLOW_UP_CONTEXT_PROMPT
+
+
+async def get_history_prompt(db: Any) -> str:
+    """
+    Load the QA history prompt from MongoDB.
+
+    Falls back to the QA_HISTORY_PROMPT constant if MongoDB is unavailable.
+
+    Args:
+        db: Motor database instance.
+
+    Returns:
+        QA history prompt template string.
+    """
+    try:
+        from src.services.settings_service import SettingsService
+        from src.settings import load_settings
+
+        settings = load_settings()
+        svc = SettingsService(settings)
+        svc.db = db
+        svc.mongo_client = True  # type: ignore[assignment]
+
+        doc = await svc.get_current()
+        return doc.get("qa_history_prompt", QA_HISTORY_PROMPT)
+
+    except Exception as e:
+        _logger.warning(f"Failed to load history prompt from MongoDB: {e}. Using constant.")
+        return QA_HISTORY_PROMPT

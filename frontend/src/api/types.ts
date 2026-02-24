@@ -645,3 +645,208 @@ export interface QualityMetricsResponse {
   outcome_distribution: DistributionItem[];
 }
 
+// =============================================================================
+// Settings Types
+// =============================================================================
+
+export interface SearchParamsOverride {
+  match_count: number | null;
+  rrf_k: number | null;
+  qa_history_match_count: number | null;
+}
+
+export interface StageDefaultConfig {
+  system_prompt_append: string | null;
+  search_params: SearchParamsOverride;
+}
+
+export interface GlobalSettings {
+  main_system_prompt: string;
+  follow_up_context_prompt: string;
+  qa_history_prompt: string;
+  stage_defaults: StageDefaultConfig;
+  default_match_count: number;
+  max_match_count: number;
+  enable_question_decomposition: boolean;
+  enable_iterative_refinement: boolean;
+  enable_qa_history_search: boolean;
+  rrf_k_constant: number;
+  qa_history_match_count: number;
+  llm_model: string;
+  llm_base_url: string;
+  embedding_model: string;
+  show_full_citations: boolean;
+}
+
+export interface SettingsResponse extends GlobalSettings {
+  id: string;
+  version: number;
+  updated_at: string; // ISO 8601
+}
+
+export interface SettingsUpdateRequest {
+  main_system_prompt?: string;
+  follow_up_context_prompt?: string;
+  qa_history_prompt?: string;
+  stage_defaults?: Partial<StageDefaultConfig>;
+  default_match_count?: number;
+  max_match_count?: number;
+  enable_question_decomposition?: boolean;
+  enable_iterative_refinement?: boolean;
+  enable_qa_history_search?: boolean;
+  rrf_k_constant?: number;
+  qa_history_match_count?: number;
+  llm_model?: string;
+  llm_base_url?: string;
+  embedding_model?: string;
+  show_full_citations?: boolean;
+}
+
+export interface SettingsVersion {
+  version: number;
+  changed_fields: string[];
+  summary: string;
+  created_at: string; // ISO 8601
+}
+
+export interface ParameterSuggestion {
+  suggestion_id: string;
+  parameter: string;
+  current_value: number | string | boolean;
+  suggested_value: number | string | boolean;
+  confidence: number; // 0.0 - 1.0
+  rationale: string;
+}
+
+export interface PromptTestRequest {
+  prompt: string;
+  test_question: string;
+}
+
+export interface PromptTestResponse {
+  answer: string;
+  latency_ms: number;
+}
+
+// =============================================================================
+// Workflow Types
+// =============================================================================
+
+export interface MetadataFieldDef {
+  key: string;
+  label: string;
+  field_type: "text" | "number" | "date" | "select";
+  required: boolean;
+  options: string[] | null; // for "select" type
+}
+
+export interface TransitionCondition {
+  type: string; // e.g. "all_questions_answered", "min_rating"
+  params?: Record<string, unknown>;
+}
+
+export interface StageConfig {
+  system_prompt_append: string | null;
+  search_params: SearchParamsOverride;
+  metadata_fields: MetadataFieldDef[];
+  auto_advance: boolean;
+}
+
+export interface StageTransition {
+  to_stage_id: string;
+  label: string;
+  condition: TransitionCondition | null;
+}
+
+export interface WorkflowStage {
+  id: string;
+  label: string;
+  description: string;
+  order: number;
+  color: string; // hex
+  config: StageConfig;
+  transitions: StageTransition[];
+}
+
+export type WorkflowType = "project" | "qa_session" | "qa_pair" | "agentic";
+
+export interface WorkflowTemplate {
+  id: string;
+  name: string;
+  description: string;
+  is_default: boolean;
+  workflow_type: WorkflowType;
+  stages: WorkflowStage[];
+  created_at: string; // ISO 8601
+  updated_at: string; // ISO 8601
+}
+
+export interface WorkflowListItem {
+  id: string;
+  name: string;
+  description: string;
+  is_default: boolean;
+  workflow_type: WorkflowType;
+  stage_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WorkflowCreateRequest {
+  name: string;
+  description?: string;
+  is_default?: boolean;
+  workflow_type?: WorkflowType;
+  stages: WorkflowStage[];
+}
+
+// =============================================================================
+// Dashboard Extended Types (Settings/Workflow features)
+// =============================================================================
+
+export interface StageFunnelItem {
+  stage_id: string;
+  label: string;
+  color: string;
+  count: number;
+  percentage: number;
+}
+
+export interface StageFunnelResponse {
+  funnel: StageFunnelItem[];
+  total_projects: number;
+}
+
+export interface QualityTrendPoint {
+  date: string;
+  good_count: number;
+  bad_count: number;
+  total_rated: number;
+  good_ratio: number;
+}
+
+export interface QualityTrendResponse {
+  trend: QualityTrendPoint[];
+  period_days: number;
+  granularity: "day" | "week" | "month";
+}
+
+export interface KBHealthData {
+  total_documents: number;
+  total_chunks: number;
+  avg_chunks_per_doc: number;
+  embedding_coverage: number; // 0.0 - 1.0
+  last_ingestion: string | null;
+  stale_document_count: number;
+  stale_threshold_days: number;
+}
+
+export interface SystemMetricsData {
+  avg_response_time_ms: number;
+  avg_search_time_ms: number;
+  total_queries_24h: number;
+  total_queries_7d: number;
+  error_rate_24h: number;
+  uptime_seconds: number;
+}
+
