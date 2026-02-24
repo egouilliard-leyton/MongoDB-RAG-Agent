@@ -8,9 +8,16 @@ import { StageDefaultsPanel } from '../components/settings/StageDefaultsPanel';
 import { ParameterSuggestions } from '../components/settings/ParameterSuggestions';
 import { PromptPlayground } from '../components/prompt-playground/PromptPlayground';
 import { WorkflowBuilder } from '../components/workflow-builder/WorkflowBuilder';
-import type { SettingsUpdateRequest, GlobalSettings, StageDefaultConfig } from '../api/types';
+import type { SettingsUpdateRequest, GlobalSettings, StageDefaultConfig, WorkflowType } from '../api/types';
 
 type SettingsTab = 'prompts' | 'rag' | 'model' | 'stage-defaults' | 'workflows' | 'playground';
+
+const WORKFLOW_SUB_TABS: { key: WorkflowType; label: string }[] = [
+  { key: 'project',    label: 'Project Workflow' },
+  { key: 'qa_session', label: 'QA Session' },
+  { key: 'qa_pair',    label: 'QA Pair' },
+  { key: 'agentic',    label: 'Agentic Pipeline' },
+];
 
 const TABS: { key: SettingsTab; label: string }[] = [
   { key: 'prompts', label: 'Prompts' },
@@ -35,6 +42,7 @@ export const SettingsPage: React.FC = () => {
   } = useSettings();
 
   const [activeTab, setActiveTab] = useState<SettingsTab>('prompts');
+  const [activeWorkflowType, setActiveWorkflowType] = useState<WorkflowType>('project');
   const [dirty, setDirty] = useState<SettingsUpdateRequest>({});
   const [showHistory, setShowHistory] = useState(false);
 
@@ -262,7 +270,28 @@ export const SettingsPage: React.FC = () => {
           />
         )}
 
-        {activeTab === 'workflows' && <WorkflowBuilder />}
+        {activeTab === 'workflows' && (
+          <div>
+            <div className="border-b border-gray-100 mb-5">
+              <nav className="flex space-x-1 -mb-px">
+                {WORKFLOW_SUB_TABS.map((sub) => (
+                  <button
+                    key={sub.key}
+                    onClick={() => setActiveWorkflowType(sub.key)}
+                    className={`px-4 py-2 text-sm font-medium border-b-2 transition-colors ${
+                      activeWorkflowType === sub.key
+                        ? 'border-indigo-500 text-indigo-600'
+                        : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-200'
+                    }`}
+                  >
+                    {sub.label}
+                  </button>
+                ))}
+              </nav>
+            </div>
+            <WorkflowBuilder workflowType={activeWorkflowType} />
+          </div>
+        )}
 
         {activeTab === 'playground' && (
           <PromptPlayground initialPrompt={currentSettings?.main_system_prompt} />
