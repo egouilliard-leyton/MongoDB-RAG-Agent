@@ -2,11 +2,17 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { StageCard } from './StageCard';
 import { StageEditor } from './StageEditor';
 import * as api from '../../api/client';
+import { seedDefaultForType } from '../../api/client';
 import type { WorkflowListItem, WorkflowTemplate, WorkflowStage } from '../../api/types';
+import type { WorkflowType } from '../../api/types';
 
 const STAGE_COLORS = ['#3B82F6', '#8B5CF6', '#F59E0B', '#10B981', '#EF4444', '#06B6D4', '#EC4899', '#F97316'];
 
-export const WorkflowBuilder: React.FC = () => {
+interface WorkflowBuilderProps {
+  workflowType: WorkflowType;
+}
+
+export const WorkflowBuilder: React.FC<WorkflowBuilderProps> = ({ workflowType }) => {
   const [workflows, setWorkflows] = useState<WorkflowListItem[]>([]);
   const [activeTemplate, setActiveTemplate] = useState<WorkflowTemplate | null>(null);
   const [editingStage, setEditingStage] = useState<WorkflowStage | null>(null);
@@ -17,24 +23,44 @@ export const WorkflowBuilder: React.FC = () => {
   const loadWorkflows = useCallback(async () => {
     setIsLoading(true);
     try {
-      const list = await api.listWorkflows();
+      const list = await api.listWorkflows(workflowType);
       setWorkflows(list);
-      // Load the default template, or the first one
-      const defaultItem = list.find((w) => w.is_default) || list[0];
-      if (defaultItem) {
-        const template = await api.getWorkflow(defaultItem.id);
-        setActiveTemplate(template);
+      if (list.length === 0) {
+        // No templates for this type — auto-seed the default
+        const seeded = await seedDefaultForType(workflowType);
+        setWorkflows([{
+          id: seeded.id,
+          name: seeded.name,
+          description: seeded.description,
+          is_default: seeded.is_default,
+          workflow_type: seeded.workflow_type,
+          stage_count: seeded.stages.length,
+          created_at: seeded.created_at,
+          updated_at: seeded.updated_at,
+        }]);
+        setActiveTemplate(seeded);
+      } else {
+        // Load the default template, or the first one
+        const defaultItem = list.find((w) => w.is_default) || list[0];
+        if (defaultItem) {
+          const template = await api.getWorkflow(defaultItem.id);
+          setActiveTemplate(template);
+        }
       }
     } catch {
       // error handled by api client
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [workflowType]);
 
+  // Reset state and reload when workflowType changes
   useEffect(() => {
+    setActiveTemplate(null);
+    setEditingStage(null);
+    setIsDirty(false);
     loadWorkflows();
-  }, [loadWorkflows]);
+  }, [workflowType]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const handleSelectWorkflow = async (id: string) => {
     try {
@@ -53,6 +79,7 @@ export const WorkflowBuilder: React.FC = () => {
         name: 'New Workflow',
         description: '',
         is_default: false,
+        workflow_type: workflowType,
         stages: [],
       });
       setWorkflows((prev) => [...prev, {
@@ -60,6 +87,7 @@ export const WorkflowBuilder: React.FC = () => {
         name: newTemplate.name,
         description: newTemplate.description,
         is_default: newTemplate.is_default,
+        workflow_type: newTemplate.workflow_type,
         stage_count: newTemplate.stages.length,
         created_at: newTemplate.created_at,
         updated_at: newTemplate.updated_at,
@@ -79,6 +107,7 @@ export const WorkflowBuilder: React.FC = () => {
         name: activeTemplate.name,
         description: activeTemplate.description,
         is_default: activeTemplate.is_default,
+        workflow_type: activeTemplate.workflow_type,
         stages: activeTemplate.stages,
       });
       setActiveTemplate(updated);
@@ -107,6 +136,7 @@ export const WorkflowBuilder: React.FC = () => {
         name: dup.name,
         description: dup.description,
         is_default: dup.is_default,
+        workflow_type: dup.workflow_type,
         stage_count: dup.stages.length,
         created_at: dup.created_at,
         updated_at: dup.updated_at,
